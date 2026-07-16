@@ -9,13 +9,47 @@ Sin dependencias externas: solo Python ≥ 3.10.
 ## Uso
 
 ```bash
+# Entrada JSON
 python -m helilog examples/escenario_ejemplo.json          # salida en texto
 python -m helilog examples/escenario_ejemplo.json --json   # salida en JSON
+
+# Entrada Excel + programación de vuelo en Excel
+python -m helilog examples/entrada_malvinas.xlsx --excel programacion.xlsx
+
+# Crear una plantilla de entrada Excel vacía
+python -m helilog mi_operacion.xlsx --plantilla
 ```
 
 Salida: un ranking de helicópteros por costo total. Para cada uno, el plan de
-vuelo tramo a tramo (distancia, horas, costo, carga a bordo y recargas de
-combustible), o el motivo por el que no es viable.
+vuelo tramo a tramo (distancia, horas, costo, carga a bordo, peso de despegue
+y recargas de combustible), o el motivo por el que no es viable.
+
+## Entrada y salida en Excel
+
+La entrada Excel (`--plantilla` genera el esqueleto) tiene las hojas:
+
+| Hoja | Contenido |
+|---|---|
+| `Config` | peso estándar pax, precio/densidad de combustible, regreso a base, hora de inicio |
+| `Puntos` | helipuntos: id, nombre, **lat/lon**, tamaño, peso máx admitido, combustible, vetos |
+| `Distancias` | **matriz de km entre puntos** (ids en primera fila y columna); prevalece sobre el cálculo por coordenadas, útil para rutas reales |
+| `Helicopteros` | flota: pax, peso vacío, MTOW, cabina máx, consumo, tanque, velocidad, precio/h, mezcla pax+carga, tamaño |
+| `Requerimientos` | demanda por grupos: Req, Origen, Destino, Tipo (PAX/CARGA), Cant, kg/U, Divisible |
+| `Pasajeros` | personas individuales: peso, equipaje, origen, destino, escalas (via) |
+
+La salida (`--excel rutas.xlsx`) replica el estilo del reporte operativo
+clásico: hoja **Programación** con bloques por rotación (helicóptero, tiempo
+horómetro, costo, filas E/D de embarque/desembarque con `DEST:`/`ORIG:`,
+unidades, kg y hora estimada de cada despegue), más hojas **Resumen** (ranking
+de la flota) y **Requerimientos** (eco de la demanda).
+
+### Requerimientos divisibles (rotaciones)
+
+Un requerimiento marcado como **Divisible** se reparte automáticamente en
+varios viajes cuando no cabe completo: por ejemplo, 29 pax con un helicóptero
+de 10 asientos/1.000 kg de cabina se planifican como 10 + 10 + 9 en tres
+rotaciones (`P08/1`, `P08/2`, `P08/3`), igual que la operación real. El tamaño
+de cada parte se calcula por helicóptero según sus asientos, cabina y MTOW.
 
 ## Qué modela
 

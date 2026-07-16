@@ -81,19 +81,48 @@ def main(argv: list[str] | None = None) -> int:
         prog="helilog",
         description="Optimización logística de helicópteros: ruta de costo mínimo.",
     )
-    parser.add_argument("scenario", help="ruta al archivo JSON del escenario")
+    parser.add_argument("scenario", help="escenario en JSON o Excel (.xlsx)")
     parser.add_argument(
         "--json", action="store_true", help="salida en JSON en lugar de texto"
     )
+    parser.add_argument(
+        "--excel", metavar="RUTA.xlsx",
+        help="además escribe la programación de vuelo a este Excel",
+    )
+    parser.add_argument(
+        "--plantilla", action="store_true",
+        help="crea un Excel de entrada vacío en la ruta dada y termina",
+    )
     args = parser.parse_args(argv)
 
+    if args.plantilla:
+        from . import excel
+
+        excel.write_template(args.scenario)
+        print(f"Plantilla creada: {args.scenario}")
+        return 0
+
+    start_time = "09:00"
     try:
-        scn = Scenario.from_json_file(args.scenario)
+        if args.scenario.lower().endswith((".xlsx", ".xlsm")):
+            from . import excel
+
+            scn, start_time = excel.scenario_from_excel(args.scenario)
+        else:
+            scn = Scenario.from_json_file(args.scenario)
     except (OSError, ValueError, KeyError) as exc:
         print(f"Error al leer el escenario: {exc}", file=sys.stderr)
         return 2
 
     plans = optimize_fleet(scn)
+
+    if args.excel:
+        from . import excel
+
+        best = next((p for p in plans if p.feasible), None)
+        requests_by_id = {r.id: r for r in (best.requests if best else [])}
+        excel.write_program(args.excel, scn, plans, requests_by_id, start_time)
+        print(f"Programación escrita en: {args.excel}\n")
 
     if args.json:
         print(json.dumps([_plan_to_dict(p) for p in plans], ensure_ascii=False, indent=2))

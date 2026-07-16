@@ -426,6 +426,84 @@ def test_passengers_en_json():
     assert plan.total_km == 200.0  # ambos comparten A→B; P1 sigue a C
 
 
+def test_division_en_varios_viajes():
+    # 29 pax de 100 kg con helicóptero de 10 asientos / 1,000 kg de cabina:
+    # se divide en 10 + 10 + 9 (tres viajes), como las rotaciones reales.
+    heli = _heli("H1", pax_capacity=10, max_payload_kg=1000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "P08", "A", "B", pax=29, pax_weight_kg=2900.0,
+                splittable=True, units=29,
+            )
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert len(plan.requests) == 3
+    assert sorted(r.pax for r in plan.requests) == [9, 10, 10]
+    assert plan.total_km == 500.0  # A→B ×3 con dos regresos en vacío
+    entregados = sum(r.pax for r in plan.requests)
+    assert entregados == 29
+
+
+def test_no_divisible_no_se_parte():
+    heli = _heli("H1", pax_capacity=10, max_payload_kg=1000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "G1", "A", "B", pax=15, pax_weight_kg=1500.0,
+                splittable=False, units=15,
+            )
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+
+
+def test_excel_entrada_y_salida():
+    import tempfile
+
+    from helilog import excel
+    from helilog.optimizer import optimize_fleet as opt
+
+    path = os.path.join(os.path.dirname(__file__), "..", "examples", "entrada_malvinas.xlsx")
+    scn, start = excel.scenario_from_excel(path)
+    assert start == "09:00"
+    assert "MALV" in scn.helipads
+    assert scn.distance_km("MALV", "SM01") == 30.0  # matriz explícita
+    assert scn.distance_km("MALV", "CAS1") > 0  # haversine por coordenadas
+    plans = opt(scn)
+    best = next(p for p in plans if p.feasible)
+    assert any("/" in r.id for r in best.requests)  # hubo división en viajes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "rutas.xlsx")
+        excel.write_program(out, scn, plans, {r.id: r for r in best.requests}, start)
+        import openpyxl
+
+        wb = openpyxl.load_workbook(out)
+        assert set(wb.sheetnames) == {"Resumen", "Programación", "Requerimientos"}
+        prog = wb["Programación"]
+        cells = [str(row[0]) for row in prog.iter_rows(values_only=True) if row[0]]
+        assert any(v.startswith("De MALV a ") for v in cells)
+
+
+def test_plantilla_excel():
+    import tempfile
+
+    from helilog import excel
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "plantilla.xlsx")
+        excel.write_template(path)
+        scn, start = excel.scenario_from_excel(path)
+        assert "MALV" in scn.helipads
+        assert len(scn.helicopters) == 1
+
+
 def test_escenario_ejemplo_json():
     path = os.path.join(os.path.dirname(__file__), "..", "examples", "escenario_ejemplo.json")
     scn = Scenario.from_json_file(path)

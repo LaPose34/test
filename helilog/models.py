@@ -103,6 +103,15 @@ class TransportRequest:
     pax_weight_kg: float | None = None
     baggage_kg: float = 0.0
     after: str | None = None
+    # División en varios viajes: si `splittable`, la solicitud puede
+    # repartirse en `units` partes iguales (pax individuales o bultos de
+    # carga) entre distintos vuelos, como hacen las rotaciones reales.
+    splittable: bool = False
+    units: int = 0
+    # Metadatos informativos (se conservan en los reportes)
+    description: str = ""
+    company: str = ""
+    project: str = ""
 
 
 @dataclass(frozen=True)
@@ -288,6 +297,11 @@ class Scenario:
                 pax_weight_kg=raw.get("pax_weight_kg"),
                 baggage_kg=raw.get("baggage_kg", 0.0),
                 after=raw.get("after"),
+                splittable=raw.get("splittable", False),
+                units=raw.get("units", 0),
+                description=raw.get("description", ""),
+                company=raw.get("company", ""),
+                project=raw.get("project", ""),
             )
             for raw in data.get("requests", [])
         ]

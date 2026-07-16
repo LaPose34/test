@@ -19,11 +19,13 @@ solicitudes; por encima se usa solo la heurística voraz.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from .models import Helicopter, Scenario, TransportRequest
 
 MAX_EXACT_REQUESTS = 8
+_KG_EPS = 1e-6  # tolerancia numérica en comparaciones de peso (kg)
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class RoutePlan:
     total_cost: float = 0.0
     method: str = "exacto"  # "exacto" o "heurístico"
     infeasible_reason: str = ""
+    # Solicitudes efectivamente planificadas (tras dividir las divisibles)
+    requests: list[TransportRequest] = field(default_factory=list)
 
 
 class _State:
@@ -85,12 +89,12 @@ def _static_feasibility(
         if req.pax > heli.pax_capacity:
             return f"solicitud '{req.id}': {req.pax} pax excede capacidad ({heli.pax_capacity})"
         payload = scn.request_payload_kg(req)
-        if heli.max_payload_kg is not None and payload > heli.max_payload_kg:
+        if heli.max_payload_kg is not None and payload > heli.max_payload_kg + _KG_EPS:
             return (
                 f"solicitud '{req.id}': {payload:.0f} kg (pax + equipaje + carga) "
                 f"excede el techo de peso ({heli.max_payload_kg:.0f} kg)"
             )
-        if heli.has_takeoff_limit and heli.empty_weight_kg + payload > heli.mtow_kg:
+        if heli.has_takeoff_limit and heli.empty_weight_kg + payload > heli.mtow_kg + _KG_EPS:
             return (
                 f"solicitud '{req.id}': {heli.empty_weight_kg + payload:.0f} kg "
                 f"(vacío + pax + equipaje + carga) excede el peso máximo de "
@@ -112,7 +116,7 @@ def _load_ok(scn: Scenario, heli: Helicopter, onboard_reqs: list[TransportReques
     # Límite estructural de cabina (opcional); el límite de despegue con
     # combustible se verifica en cada despegue dentro de _fly.
     if heli.max_payload_kg is not None:
-        if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg:
+        if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg + _KG_EPS:
             return False
     if pax > 0 and cargo > 0 and not heli.can_combine_pax_cargo:
         return False
@@ -269,12 +273,92 @@ def _greedy(scn: Scenario, heli: Helicopter, requests, start: _State) -> _State 
     return _finish(scn, heli, state, requests)
 
 
+def _chunk_units_for_heli(scn: Scenario, heli: Helicopter, req: TransportRequest) -> int:
+    """Cuántas unidades de esta solicitud caben por viaje en este helicóptero."""
+    unit_payload = scn.request_payload_kg(req) / req.units
+    budget = math.inf
+    if heli.max_payload_kg is not None:
+        budget = heli.max_payload_kg
+    if heli.has_takeoff_limit:
+        tank_kg = heli.fuel_capacity_l * scn.fuel_density_kg_per_l
+        # Presupuesto conservador: con tanque lleno; si ni una unidad cabe,
+        # relajar a medio tanque (el chequeo real por despegue sigue vigente).
+        mtow_budget = heli.mtow_kg - heli.empty_weight_kg - tank_kg
+        if unit_payload > 0 and mtow_budget < unit_payload:
+            mtow_budget = heli.mtow_kg - heli.empty_weight_kg - tank_kg / 2
+        budget = min(budget, mtow_budget)
+    by_weight = (
+        int((budget + _KG_EPS) // unit_payload)
+        if unit_payload > 0 and budget != math.inf
+        else req.units
+    )
+    by_seats = heli.pax_capacity if req.pax > 0 else req.units
+    return max(1, min(req.units, by_weight, by_seats))
+
+
+def _split_requests(scn: Scenario, heli: Helicopter) -> list[TransportRequest]:
+    """Divide las solicitudes divisibles en partes que caben por viaje.
+
+    Replica el comportamiento operativo real: un requerimiento de 29 pax se
+    reparte en rotaciones de, p. ej., 10 + 10 + 9. No se dividen solicitudes
+    encadenadas con `after` ni aquellas cuyos pax no coinciden con `units`.
+    """
+    chained = {r.after for r in scn.requests if r.after is not None}
+    out: list[TransportRequest] = []
+    for req in scn.requests:
+        divisible = (
+            req.splittable
+            and req.units > 1
+            and req.after is None
+            and req.id not in chained
+            and (req.pax == 0 or req.pax == req.units)
+        )
+        if not divisible:
+            out.append(req)
+            continue
+        chunk = _chunk_units_for_heli(scn, heli, req)
+        if chunk >= req.units:
+            out.append(req)
+            continue
+        n = req.units
+        part = 1
+        done = 0
+        while done < n:
+            m = min(chunk, n - done)
+            frac = m / n
+            out.append(
+                TransportRequest(
+                    id=f"{req.id}/{part}",
+                    origin=req.origin,
+                    destination=req.destination,
+                    pax=m if req.pax else 0,
+                    cargo_kg=req.cargo_kg * frac,
+                    pax_weight_kg=(
+                        req.pax_weight_kg * frac if req.pax_weight_kg is not None else None
+                    ),
+                    baggage_kg=req.baggage_kg * frac,
+                    units=m,
+                    description=req.description,
+                    company=req.company,
+                    project=req.project,
+                )
+            )
+            done += m
+            part += 1
+    return out
+
+
 def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
     """Ruta de costo mínimo para que UN helicóptero sirva todas las solicitudes."""
-    requests = scn.requests
+    requests = _split_requests(scn, heli)
     reason = _static_feasibility(scn, heli, requests)
     if reason:
-        return RoutePlan(helicopter_id=heli.id, feasible=False, infeasible_reason=reason)
+        return RoutePlan(
+            helicopter_id=heli.id,
+            feasible=False,
+            infeasible_reason=reason,
+            requests=requests,
+        )
 
     # Si la base tiene combustible, se carga justo antes del primer despegue
     # (limitado por el MTOW); si no, se asume que llega con tanque lleno.
@@ -306,12 +390,18 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
             stack.extend(_successors(scn, heli, state, requests))
 
     if best is None:
+        if len(requests) > MAX_EXACT_REQUESTS:
+            reason = (
+                f"la heurística no encontró ruta viable (más de {MAX_EXACT_REQUESTS} "
+                "solicitudes: podría existir; pruebe con menos solicitudes a la vez)"
+            )
+        else:
+            reason = "sin ruta viable (autonomía de combustible o restricciones de carga)"
         return RoutePlan(
             helicopter_id=heli.id,
             feasible=False,
-            infeasible_reason=(
-                "sin ruta viable (autonomía de combustible o restricciones de carga)"
-            ),
+            infeasible_reason=reason,
+            requests=requests,
         )
 
     legs = list(best.legs)
@@ -323,6 +413,7 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
         total_hours=sum(l.hours for l in legs),
         total_cost=best.cost,
         method=method,
+        requests=requests,
     )
 
 
