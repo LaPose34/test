@@ -1,0 +1,90 @@
+{
+  "pax_weight_kg": 90,
+  "fuel_price_per_l": 1.4,
+  "return_to_base": true,
+
+  "helipads": [
+    {
+      "id": "BASE",
+      "name": "Aeropuerto base",
+      "lat": 19.145,
+      "lon": -96.187,
+      "size_class": 3,
+      "has_fuel": true
+    },
+    {
+      "id": "PLAT-A",
+      "name": "Plataforma Alfa",
+      "lat": 19.62,
+      "lon": -95.85,
+      "size_class": 2,
+      "max_weight_kg": 6000,
+      "has_fuel": true
+    },
+    {
+      "id": "PLAT-B",
+      "name": "Plataforma Bravo",
+      "lat": 19.83,
+      "lon": -95.60,
+      "size_class": 1,
+      "max_weight_kg": 3500,
+      "has_fuel": false
+    },
+    {
+      "id": "HOSP",
+      "name": "Helipuerto hospital",
+      "lat": 19.17,
+      "lon": -96.13,
+      "size_class": 2,
+      "max_weight_kg": 5500,
+      "has_fuel": false,
+      "banned_helicopters": []
+    }
+  ],
+
+  "distances": [
+    { "from": "BASE", "to": "HOSP", "km": 6.5 }
+  ],
+
+  "helicopters": [
+    {
+      "id": "XA-H125",
+      "name": "Airbus H125",
+      "pax_capacity": 5,
+      "empty_weight_kg": 1265,
+      "fuel_consumption_lph": 195,
+      "fuel_capacity_l": 540,
+      "cruise_speed_kmh": 220,
+      "price_per_hour": 1800,
+      "base": "BASE",
+      "can_combine_pax_cargo": true,
+      "mtow_kg": 2250,
+      "size_class": 1
+    },
+    {
+      "id": "XA-B412",
+      "name": "Bell 412EP",
+      "pax_capacity": 13,
+      "empty_weight_kg": 3070,
+      "fuel_consumption_lph": 420,
+      "fuel_capacity_l": 1250,
+      "cruise_speed_kmh": 230,
+      "price_per_hour": 4200,
+      "base": "BASE",
+      "can_combine_pax_cargo": false,
+      "mtow_kg": 5400,
+      "size_class": 2
+    }
+  ],
+
+  "requests": [
+    { "id": "R2-refacciones", "origin": "PLAT-A", "destination": "PLAT-B", "cargo_kg": 300 },
+    { "id": "R3-relevo", "origin": "PLAT-B", "destination": "BASE", "pax": 3 }
+  ],
+
+  "passengers": [
+    { "id": "P1", "name": "Ana García", "weight_kg": 68, "baggage_kg": 12, "origin": "BASE", "destination": "PLAT-A" },
+    { "id": "P2", "name": "Luis Torres", "weight_kg": 102, "baggage_kg": 18, "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] },
+    { "id": "P3", "name": "Marta Ruiz", "weight_kg": 75, "baggage_kg": 8, "origin": "PLAT-A", "destination": "HOSP" }
+  ]
+}

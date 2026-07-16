@@ -1,0 +1,659 @@
+"""Tests del optimizador. Ejecutar con `python -m pytest` o `python tests/test_optimizer.py`."""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from helilog import Helicopter, Helipad, Passenger, Scenario, TransportRequest
+from helilog.optimizer import optimize_fleet, optimize_route
+
+
+def _pad(pid, **kw):
+    return Helipad(id=pid, name=pid, **kw)
+
+
+def _heli(hid, **kw):
+    defaults = dict(
+        pax_capacity=6,
+        max_payload_kg=1200,
+        fuel_consumption_lph=200,
+        fuel_capacity_l=600,
+        cruise_speed_kmh=200,
+        price_per_hour=2000,
+        base="A",
+        size_class=1,
+        mtow_kg=2500,
+    )
+    defaults.update(kw)
+    return Helicopter(id=hid, **defaults)
+
+
+def _scn(**kw):
+    """Triángulo A-B-C con distancias explícitas."""
+    defaults = dict(
+        helipads={
+            "A": _pad("A", has_fuel=True),
+            "B": _pad("B"),
+            "C": _pad("C"),
+        },
+        helicopters=[_heli("H1")],
+        requests=[],
+        distances={("A", "B"): 100.0, ("B", "C"): 100.0, ("A", "C"): 150.0},
+    )
+    defaults.update(kw)
+    return Scenario(**defaults)
+
+
+def test_ruta_simple_costo():
+    scn = _scn(requests=[TransportRequest("R1", "A", "B", pax=2)])
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    # 100 km a 200 km/h = 0.5 h; costo/h = 2000 (fuel_price = 0)
+    assert abs(plan.total_cost - 1000.0) < 1e-6
+    assert plan.total_km == 100.0
+    assert [l.action for l in plan.legs] == ["recoger R1", "entregar R1"]
+
+
+def test_orden_optimo_multiples_solicitudes():
+    # Servir B→C y A→B: lo óptimo es recoger en A, entregar en B, recoger, entregar en C
+    scn = _scn(
+        requests=[
+            TransportRequest("R1", "B", "C", pax=1),
+            TransportRequest("R2", "A", "B", pax=1),
+        ]
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 200.0  # A→B→C sin retrocesos
+    assert plan.method == "exacto"
+
+
+def test_consolidacion_en_un_vuelo():
+    # Dos solicitudes con el mismo par origen-destino viajan juntas
+    scn = _scn(
+        requests=[
+            TransportRequest("R1", "A", "B", pax=2),
+            TransportRequest("R2", "A", "B", pax=3),
+        ]
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 100.0
+
+
+def test_capacidad_pax_obliga_dos_viajes():
+    scn = _scn(
+        requests=[
+            TransportRequest("R1", "A", "B", pax=4),
+            TransportRequest("R2", "A", "B", pax=4),
+        ]
+    )
+    plan = optimize_route(scn, scn.helicopters[0])  # capacidad 6 < 8
+    assert plan.feasible
+    assert plan.total_km == 300.0  # A→B, B→A, A→B
+
+
+def test_pax_cuentan_como_peso():
+    scn = _scn(requests=[TransportRequest("R1", "A", "B", pax=6, cargo_kg=800)])
+    # 6*90 + 800 = 1340 > 1200
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert not plan.feasible
+    assert "techo de peso" in plan.infeasible_reason
+
+
+def test_sin_mezcla_pax_carga():
+    heli = _heli("H1", can_combine_pax_cargo=False)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("R1", "A", "B", pax=2),
+            TransportRequest("R2", "A", "B", cargo_kg=200),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 300.0  # no pueden compartir vuelo → dos viajes
+    for leg in plan.legs:
+        assert not (leg.pax_onboard > 0 and leg.cargo_onboard_kg > 0)
+
+
+def test_helipad_no_habilitado_por_tamano():
+    scn = _scn(
+        helipads={
+            "A": _pad("A", has_fuel=True),
+            "B": _pad("B", size_class=1),
+            "C": _pad("C"),
+        },
+        helicopters=[_heli("H1", size_class=2)],
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert not plan.feasible
+    assert "'B' no admite" in plan.infeasible_reason
+
+
+def test_helipad_no_habilitado_por_peso():
+    scn = _scn(
+        helipads={
+            "A": _pad("A", has_fuel=True),
+            "B": _pad("B", max_weight_kg=2000),
+            "C": _pad("C"),
+        },
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])  # mtow 2500 > 2000
+    assert not plan.feasible
+
+
+def test_autonomia_combustible():
+    # Autonomía: 600/200 = 3 h → 600 km por tanque. Tramo de 700 km inviable.
+    scn = _scn(
+        distances={("A", "B"): 700.0, ("B", "C"): 100.0, ("A", "C"): 650.0},
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert not plan.feasible
+
+
+def test_recarga_en_helipad_con_combustible():
+    # 500 km ida + 500 vuelta: imposible sin recargar (600 km de autonomía),
+    # posible recargando en B.
+    scn = _scn(
+        helipads={
+            "A": _pad("A", has_fuel=True),
+            "B": _pad("B", has_fuel=True),
+            "C": _pad("C"),
+        },
+        distances={("A", "B"): 500.0, ("B", "C"): 100.0, ("A", "C"): 550.0},
+        requests=[
+            TransportRequest("R1", "A", "B", pax=1),
+            TransportRequest("R2", "B", "A", pax=1),
+        ],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert any(l.refueled_before for l in plan.legs)
+
+
+def test_costo_incluye_combustible():
+    scn = _scn(
+        fuel_price_per_l=2.0,
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    # costo/h = 2000 + 200 L/h * 2.0 = 2400; 0.5 h → 1200
+    assert abs(plan.total_cost - 1200.0) < 1e-6
+
+
+def test_regreso_a_base():
+    scn = _scn(
+        return_to_base=True,
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.legs[-1].to_pad == "A"
+    assert plan.total_km == 200.0
+
+
+def test_flota_elige_mas_barato():
+    caro = _heli("CARO", price_per_hour=5000)
+    barato = _heli("BARATO", price_per_hour=1500)
+    scn = _scn(
+        helicopters=[caro, barato],
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plans = optimize_fleet(scn)
+    assert plans[0].helicopter_id == "BARATO"
+    assert plans[0].total_cost < plans[1].total_cost
+
+
+def test_peso_individual_de_pasajeros():
+    # Dos personas de 150 kg: caben por pax (6) pero no por peso juntos
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=150.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=150.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 300.0  # dos viajes por peso real, no por conteo
+
+
+def test_peso_individual_permite_compartir():
+    # Las mismas dos personas pero de 90 kg sí comparten vuelo
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=90.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 100.0
+
+
+def test_equipaje_cuenta_contra_techo_de_peso():
+    # 90 kg persona + 30 kg maleta cada uno: 2 × 120 = 240 > 200 → dos viajes
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=30.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=30.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 300.0
+    for leg in plan.legs:
+        assert leg.payload_kg <= heli.max_payload_kg
+
+
+def test_equipaje_excede_techo_es_inviable():
+    heli = _heli("H1", max_payload_kg=100)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=85.0, baggage_kg=25.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+    assert "techo de peso" in plan.infeasible_reason
+
+
+def test_equipaje_no_es_carga_para_regla_de_mezcla():
+    # Helicóptero que NO mezcla pax y carga: la maleta del pax SÍ puede volar con él
+    heli = _heli("H1", can_combine_pax_cargo=False)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=20.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 100.0
+
+
+def test_pasajero_json_con_equipaje():
+    p = Passenger(id="P", weight_kg=80, baggage_kg=15, origin="A", destination="B")
+    assert p.total_kg == 95
+    reqs = p.to_requests()
+    assert len(reqs) == 1
+    assert reqs[0].pax_weight_kg == 80 and reqs[0].baggage_kg == 15
+
+
+def test_limite_de_despegue_reduce_combustible():
+    # MTOW 2000, vacío 1000 → margen 1000 kg. Tanque lleno pesa 400 kg
+    # (500 L × 0.8). Con 700 kg de grupo no cabe tanque lleno, pero cargando
+    # solo el combustible permitido (300 kg) el vuelo corto sale bien.
+    heli = _heli(
+        "H1",
+        max_payload_kg=None,
+        empty_weight_kg=1000,
+        mtow_kg=2000,
+        fuel_capacity_l=500,
+    )
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    for leg in plan.legs:
+        if leg.takeoff_kg is not None:
+            assert leg.takeoff_kg <= heli.mtow_kg + 1e-6
+
+
+def test_llega_con_tanque_lleno_y_excede_mtow():
+    # La base NO tiene combustible: llega con tanque lleno (400 kg) que no
+    # puede descargar → 1000 + 400 + 700 = 2100 > 2000 → inviable.
+    heli = _heli(
+        "H1",
+        max_payload_kg=None,
+        empty_weight_kg=1000,
+        mtow_kg=2000,
+        fuel_capacity_l=500,
+    )
+    scn = _scn(
+        helipads={"A": _pad("A"), "B": _pad("B"), "C": _pad("C")},
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+
+
+def test_mtow_excedido_aun_sin_combustible():
+    heli = _heli("H1", max_payload_kg=None, empty_weight_kg=1900, mtow_kg=2000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=2, pax_weight_kg=200.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+    assert "peso máximo de despegue" in plan.infeasible_reason
+
+
+def test_sin_datos_de_peso_vacio_no_aplica_mtow():
+    # Sin empty_weight_kg el límite de despegue no puede calcularse y no aplica
+    heli = _heli("H1", mtow_kg=2000)  # empty_weight_kg = 0
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert all(l.takeoff_kg is None for l in plan.legs)
+
+
+def test_pasajero_multi_punto_via():
+    # P debe aterrizar en B antes de llegar a C: la ruta directa A→C (150 km)
+    # queda prohibida; la ruta obligada es A→B→C (200 km).
+    passenger = Passenger(id="P", weight_kg=80, origin="A", destination="C", via=("B",))
+    scn = _scn(requests=passenger.to_requests())
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 200.0
+    actions = [l.action for l in plan.legs]
+    assert actions.index("entregar P#1") < actions.index("recoger P#2")
+
+
+def test_precedencia_after_se_respeta():
+    # R2 solo puede recogerse tras entregar R1 (mismo pad B)
+    scn = _scn(
+        requests=[
+            TransportRequest("R1", "A", "B", pax=1),
+            TransportRequest("R2", "B", "C", pax=1, after="R1"),
+        ]
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    actions = [l.action for l in plan.legs]
+    assert actions.index("entregar R1") < actions.index("recoger R2")
+
+
+def test_after_invalido_se_rechaza():
+    try:
+        _scn(
+            requests=[TransportRequest("R1", "A", "B", pax=1, after="NO-EXISTE")]
+        ).validate()
+    except ValueError as exc:
+        assert "after" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError por 'after' inexistente")
+
+
+def test_passengers_en_json():
+    scn = Scenario.from_dict(
+        {
+            "helipads": [
+                {"id": "A", "has_fuel": True},
+                {"id": "B"},
+                {"id": "C"},
+            ],
+            "distances": [
+                {"from": "A", "to": "B", "km": 100},
+                {"from": "B", "to": "C", "km": 100},
+                {"from": "A", "to": "C", "km": 150},
+            ],
+            "helicopters": [
+                {
+                    "id": "H1",
+                    "pax_capacity": 6,
+                    "max_payload_kg": 1200,
+                    "fuel_consumption_lph": 200,
+                    "fuel_capacity_l": 600,
+                    "cruise_speed_kmh": 200,
+                    "price_per_hour": 2000,
+                    "base": "A",
+                    "size_class": 1,
+                }
+            ],
+            "passengers": [
+                {"id": "P1", "weight_kg": 95, "origin": "A", "destination": "C", "via": ["B"]},
+                {"id": "P2", "weight_kg": 70, "origin": "A", "destination": "B"},
+            ],
+        }
+    )
+    assert len(scn.requests) == 3  # P1 se expande en 2 tramos encadenados
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 200.0  # ambos comparten A→B; P1 sigue a C
+
+
+def test_division_en_varios_viajes():
+    # 29 pax de 100 kg con helicóptero de 10 asientos / 1,000 kg de cabina:
+    # se divide en 10 + 10 + 9 (tres viajes), como las rotaciones reales.
+    heli = _heli("H1", pax_capacity=10, max_payload_kg=1000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "P08", "A", "B", pax=29, pax_weight_kg=2900.0,
+                splittable=True, units=29,
+            )
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert len(plan.requests) == 3
+    assert sorted(r.pax for r in plan.requests) == [9, 10, 10]
+    assert plan.total_km == 500.0  # A→B ×3 con dos regresos en vacío
+    entregados = sum(r.pax for r in plan.requests)
+    assert entregados == 29
+
+
+def test_no_divisible_no_se_parte():
+    heli = _heli("H1", pax_capacity=10, max_payload_kg=1000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "G1", "A", "B", pax=15, pax_weight_kg=1500.0,
+                splittable=False, units=15,
+            )
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+
+
+def test_excel_entrada_y_salida():
+    import tempfile
+
+    from helilog import excel
+    from helilog.optimizer import optimize_fleet as opt
+
+    path = os.path.join(os.path.dirname(__file__), "..", "examples", "entrada_malvinas.xlsx")
+    scn, start = excel.scenario_from_excel(path)
+    assert start == "09:00"
+    assert "MALV" in scn.helipads
+    assert scn.distance_km("MALV", "SM01") == 30.0  # matriz explícita
+    assert scn.distance_km("MALV", "CAS1") > 0  # haversine por coordenadas
+    plans = opt(scn)
+    best = next(p for p in plans if p.feasible)
+    assert any("/" in r.id for r in best.requests)  # hubo división en viajes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "rutas.xlsx")
+        excel.write_program(out, scn, plans, {r.id: r for r in best.requests}, start)
+        import openpyxl
+
+        wb = openpyxl.load_workbook(out)
+        assert set(wb.sheetnames) == {
+            "Resumen", "Programación", "Tiempo en tierra", "Requerimientos"
+        }
+        prog = wb["Programación"]
+        cells = [str(row[0]) for row in prog.iter_rows(values_only=True) if row[0]]
+        assert any(v.startswith("De MALV a ") for v in cells)
+
+
+def test_plantilla_excel():
+    import tempfile
+
+    from helilog import excel
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "plantilla.xlsx")
+        excel.write_template(path)
+        scn, start = excel.scenario_from_excel(path)
+        assert "MALV" in scn.helipads
+        assert len(scn.helicopters) == 1
+
+
+def test_catalogo_capacidades_peru():
+    from helilog import catalog
+
+    assert catalog.find("Mi-171")["pax_capacity"] == 19
+    assert catalog.find("bell 412")["pax_capacity"] == 13
+    assert catalog.find("H145")["pax_capacity"] == 10
+    assert catalog.find("BK117")["pax_capacity"] == 10
+    assert catalog.find("EC-145")["pax_capacity"] == 10
+    assert catalog.find("modelo inexistente") is None
+
+
+def test_catalogo_make_y_json():
+    from helilog import catalog
+
+    heli = catalog.make("BELL412", id="OB1", base="A", price_per_hour=3000)
+    assert heli.pax_capacity == 13
+    assert heli.mtow_kg == 5398
+
+    scn = Scenario.from_dict(
+        {
+            "helipads": [{"id": "A"}],
+            "helicopters": [
+                {"id": "OB2", "model": "Mi-171", "base": "A", "price_per_hour": 5000,
+                 "pax_capacity": 17}  # el override manda sobre el catálogo
+            ],
+        }
+    )
+    assert scn.helicopters[0].pax_capacity == 17
+    assert scn.helicopters[0].mtow_kg == 13000
+
+
+def test_combustible_minimo_para_levantar_mas_carga():
+    # Con tanque lleno, el helicóptero llega tan pesado a B que no puede
+    # recoger la carga de regreso; cargando el mínimo seguro sí puede.
+    from helilog import catalog
+
+    heli = catalog.make("H145", id="H1", base="A", price_per_hour=2600)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("R1", "A", "B", pax=10, pax_weight_kg=1000.0),
+            TransportRequest("R2", "B", "A", cargo_kg=500.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    for leg in plan.legs:
+        if leg.takeoff_kg is not None:
+            assert leg.takeoff_kg <= heli.mtow_kg + 1e-6
+
+
+def test_tiempo_vertical_en_tramos():
+    # Ascenso+descenso a 300 m con 6 m/s = 600/6 s = 100 s ≈ 0.02778 h por tramo
+    heli = _heli("H1", vertical_speed_ms=6.0)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    esperado = 100.0 / 200.0 + (2 * 300.0 / 6.0) / 3600.0
+    assert abs(plan.total_hours - esperado) < 1e-9
+    assert abs(plan.total_cost - esperado * 2000.0) < 1e-6
+
+
+def test_velocidad_vertical_decide_modelo():
+    # Muchas paradas cortas: gana el helicóptero de ascenso rápido aunque su
+    # hora sea más cara, porque acumula mucho menos tiempo de maniobra.
+    lento = _heli("LENTO", pax_capacity=1, price_per_hour=2000, vertical_speed_ms=2.0)
+    rapido = _heli("RAPIDO", pax_capacity=1, price_per_hour=2400, vertical_speed_ms=10.0)
+    scn = _scn(
+        helicopters=[lento, rapido],
+        distances={("A", "B"): 10.0, ("B", "C"): 10.0, ("A", "C"): 15.0},
+        requests=[
+            TransportRequest("R1", "A", "B", pax=1),
+            TransportRequest("R2", "A", "B", pax=1),
+            TransportRequest("R3", "A", "B", pax=1),
+        ],
+    )
+    plans = optimize_fleet(scn)
+    assert plans[0].helicopter_id == "RAPIDO"
+    assert plans[0].total_cost < plans[1].total_cost
+
+
+def test_tiempo_en_tierra_y_estadisticas():
+    from helilog.optimizer import ground_stats_by_company, plan_visits
+
+    heli = _heli("H1", pax_capacity=10, free_ground_min=5.0)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "R1", "A", "B", pax=10, pax_weight_kg=1000.0, company="Empresa A"
+            ),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    visits = plan_visits(scn, heli, plan)
+    # Parada en A (embarque) y en B (desembarque): 10 pax y 1.000 kg movidos
+    # → 2 + 10×0.5 + 10×2 = 27 min cada una; admisible 5 → exceso 22 min
+    con_tierra = [v for v in visits if v["ground_min"] > 0]
+    assert len(con_tierra) == 2
+    for v in con_tierra:
+        assert abs(v["ground_min"] - 27.0) < 1e-9
+        assert abs(v["excess_min"] - 22.0) < 1e-9
+        assert abs(v["extra_cost"] - 22.0 / 60.0 * 2000.0) < 1e-6
+
+    stats = ground_stats_by_company(visits)
+    assert len(stats) == 1
+    s = stats[0]
+    assert s["company"] == "Empresa A"
+    assert s["stops"] == 2
+    assert s["min_ground_min"] == s["max_ground_min"] == s["avg_ground_min"] == 27.0
+    assert abs(s["total_excess_min"] - 44.0) < 1e-9
+
+    # El horario corre con el tiempo en tierra: la llegada a B es después
+    # de los 27 min en tierra de A más el vuelo
+    llegada_b = con_tierra[1]["arrive_h"]
+    assert llegada_b > 27.0 / 60.0
+
+
+def test_sin_limite_admisible_no_hay_cargo():
+    from helilog.optimizer import plan_visits
+
+    heli = _heli("H1")  # free_ground_min = 0 → sin límite
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("R1", "A", "B", pax=4, company="X")],
+    )
+    plan = optimize_route(scn, heli)
+    visits = plan_visits(scn, heli, plan)
+    assert all(v.get("excess_min", 0) == 0 for v in visits)
+    assert all(v.get("extra_cost", 0) == 0 for v in visits)
+
+
+def test_escenario_ejemplo_json():
+    path = os.path.join(os.path.dirname(__file__), "..", "examples", "escenario_ejemplo.json")
+    scn = Scenario.from_json_file(path)
+    plans = optimize_fleet(scn)
+    assert plans[0].feasible
+    assert plans[0].helicopter_id == "XA-H125"  # el B412 no cabe en PLAT-B
+    assert not plans[1].feasible
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for fn in fns:
+        fn()
+        print(f"OK  {fn.__name__}")
+    print(f"\n{len(fns)} tests pasaron")
