@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 from . import catalog
 from .models import Helicopter, Helipad, Passenger, Scenario, TransportRequest
-from .optimizer import Leg, RoutePlan
+from .optimizer import RoutePlan, ground_stats_by_company, plan_visits
 
 
 def _yes(value, default=False) -> bool:
@@ -52,6 +52,9 @@ CONFIG_KEYS = {
     "altitud de crucero": "cruise_altitude_m",
     "regreso a base": "return_to_base",
     "hora inicio": "start_time",
+    "minutos base por parada": "ground_base_min",
+    "minutos por pax": "ground_min_per_pax",
+    "minutos por 100": "ground_min_per_100kg",
 }
 
 
@@ -163,6 +166,7 @@ def scenario_from_excel(path: str) -> tuple[Scenario, str]:
                 can_combine_pax_cargo=_yes(row[11], True) if len(row) > 11 else True,
                 size_class=int(cell(12, "size_class", 2)),
                 vertical_speed_ms=cell(13, "vertical_speed_ms", 0.0),
+                free_ground_min=cell(14, "free_ground_min", 0.0),
             )
         )
 
@@ -245,6 +249,9 @@ def write_template(path: str) -> None:
             ("Altitud de crucero (m)", 300),
             ("Regreso a base", "SI"),
             ("Hora inicio", "09:00"),
+            ("Minutos base por parada", 2),
+            ("Minutos por pax", 0.5),
+            ("Minutos por 100 kg", 2),
         ],
         1,
     ):
@@ -275,9 +282,9 @@ def write_template(path: str) -> None:
         ["Id", "Nombre", "Base", "Pax", "Peso vacío (kg)", "MTOW (kg)",
          "Cabina máx (kg)", "Consumo (L/h)", "Tanque (L)", "Velocidad (km/h)",
          "Precio por hora", "Pax+carga juntos (SI/NO)", "Tamaño (1-3)",
-         "Vel. vertical (m/s)"],
+         "Vel. vertical (m/s)", "T. tierra admisible (min)"],
         [["OB2106", "Bell 412EP", "MALV", None, None, None, 1000, None, None,
-          None, 3500, "SI", None, None]],
+          None, 3500, "SI", None, None, 8]],
     )
     add(
         "Requerimientos",
@@ -297,21 +304,6 @@ def write_template(path: str) -> None:
 def _fmt_h(hours: float) -> str:
     m = round(hours * 60)
     return f"{m // 60:02d}H{m % 60:02d}"
-
-
-def _visits(legs: list[Leg]):
-    """Agrupa los tramos en visitas: (pad, [acciones], hora_llegada_horas)."""
-    visits = []
-    clock = 0.0
-    for leg in legs:
-        clock += leg.hours
-        if leg.km > 0 or not visits:
-            visits.append({"pad": leg.to_pad, "legs": [leg], "t": clock,
-                           "km": leg.km, "hours": leg.hours, "cost": leg.cost,
-                           "from": leg.from_pad})
-        else:
-            visits[-1]["legs"].append(leg)
-    return visits
 
 
 def write_program(
@@ -363,7 +355,7 @@ def write_program(
             t = t0 + timedelta(hours=hours_from_start)
             return t.strftime("%HH%M")
 
-        visits = _visits(best.legs)
+        visits = plan_visits(scn, heli, best)
         # separar en rotaciones: cada regreso VOLADO a la base cierra una
         rotations: list[list[dict]] = [[]]
         for v in visits:
@@ -420,16 +412,74 @@ def write_program(
                     ws.cell(row, 5, tipo)
                     ws.cell(row, 6, n_units)
                     ws.cell(row, 7, round(total_kg, 1) if total_kg is not None else None)
-                    ws.cell(row, 8, hora(v["t"]))
+                    ws.cell(row, 8, hora(v["arrive_h"]))
                     if info is not None:
                         ws.cell(row, 9, info.description)
                         ws.cell(row, 10, info.company)
                         ws.cell(row, 11, info.project)
                     row += 1
+                if v.get("ground_min", 0) > 0:
+                    detail = f"En tierra {v['ground_min']:.1f} min"
+                    if v["excess_min"] > 0:
+                        detail += (
+                            f" (admisible {heli.free_ground_min:.0f} min;"
+                            f" exceso {v['excess_min']:.1f} min →"
+                            f" cargo al cliente {v['extra_cost']:.2f})"
+                        )
+                    ws.cell(row, 2, detail)
+                    ws.cell(row, 3, v["pad"])
+                    row += 1
             last = rot[-1]
             ws.cell(row, 1, f"Fin de rotación en {last['pad']}")
-            ws.cell(row, 2, f"Hora estimada: {hora(last['t'])}")
+            ws.cell(row, 2, f"Hora estimada: {hora(last['arrive_h'])}")
             row += 2
+
+    # ---- Estadística de tiempo en tierra (mejor plan)
+    ws = wb.create_sheet("Tiempo en tierra")
+    if best is not None:
+        heli = heli_by_id[best.helicopter_id]
+        visits = plan_visits(scn, heli, best)
+        ws.cell(1, 1, f"Tiempo en tierra estimado — {heli.name or heli.id}"
+                      f" (admisible {heli.free_ground_min:.0f} min/parada)").font = bold
+        headers = ["#", "Punto", "Hora llegada", "Pax mov.", "Kg mov.",
+                   "Min en tierra", "Exceso (min)", "Cargo al cliente", "Empresas"]
+        for c, h in enumerate(headers, 1):
+            ws.cell(3, c, h).font = bold
+        r = 4
+        n = 0
+        t0 = datetime.strptime(start_time, "%H:%M")
+        for v in visits:
+            if v.get("ground_min", 0) <= 0:
+                continue
+            n += 1
+            ws.cell(r, 1, n)
+            ws.cell(r, 2, v["pad"])
+            ws.cell(r, 3, (t0 + timedelta(hours=v["arrive_h"])).strftime("%HH%M"))
+            ws.cell(r, 4, v["pax_moved"])
+            ws.cell(r, 5, round(v["kg_moved"], 1))
+            ws.cell(r, 6, round(v["ground_min"], 1))
+            ws.cell(r, 7, round(v["excess_min"], 1))
+            ws.cell(r, 8, round(v["extra_cost"], 2))
+            ws.cell(r, 9, ", ".join(v["companies"]))
+            r += 1
+
+        r += 1
+        ws.cell(r, 1, "Resumen por empresa (cliente)").font = bold
+        r += 1
+        headers = ["Empresa", "Paradas", "Mín (min)", "Promedio (min)",
+                   "Máx (min)", "Exceso total (min)", "Cargo extra total"]
+        for c, h in enumerate(headers, 1):
+            ws.cell(r, c, h).font = bold
+        r += 1
+        for s in ground_stats_by_company(visits):
+            ws.cell(r, 1, s["company"])
+            ws.cell(r, 2, s["stops"])
+            ws.cell(r, 3, round(s["min_ground_min"], 1))
+            ws.cell(r, 4, round(s["avg_ground_min"], 1))
+            ws.cell(r, 5, round(s["max_ground_min"], 1))
+            ws.cell(r, 6, round(s["total_excess_min"], 1))
+            ws.cell(r, 7, round(s["total_extra_cost"], 2))
+            r += 1
 
     # ---- Eco de requerimientos
     ws = wb.create_sheet("Requerimientos")

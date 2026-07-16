@@ -72,6 +72,21 @@ optimizador entre dos políticas, con vuelta atrás si una no funciona:
 Esto refleja la operación real: para recoger una carga pesada en una
 plataforma sin combustible conviene llegar con poco combustible.
 
+## Tiempo en tierra y estadísticas por cliente
+
+El tiempo en tierra por parada se estima como
+`base + pax movidos × min/pax + kg movidos/100 × min/100kg` (parámetros en
+`Config`: 2 min base, 0.5 min/pax y 2 min/100 kg por defecto) y corre el
+horario de la programación. Si supera el **tiempo admisible** del helicóptero
+(`free_ground_min`), el exceso se factura al cliente de esa parada a la
+tarifa horaria y se reporta como cargo separado (no altera el ranking de
+costo del operador).
+
+La hoja **Tiempo en tierra** del Excel de salida (y el resumen del CLI) trae
+la estadística por empresa: número de paradas, tiempo en tierra **mínimo,
+promedio y máximo**, exceso total en minutos y cargo extra total — por
+helicóptero.
+
 ### Requerimientos divisibles (rotaciones)
 
 Un requerimiento marcado como **Divisible** se reparte automáticamente en
@@ -93,6 +108,7 @@ de cada parte se calcula por helicóptero según sus asientos, cabina y MTOW.
 | `fuel_capacity_l` | capacidad del tanque (define la autonomía) |
 | `cruise_speed_kmh` | velocidad crucero |
 | `vertical_speed_ms` | velocidad vertical (m/s): cada despegue+aterrizaje suma tiempo de ascenso y descenso a la altitud de crucero (`cruise_altitude_m`, 300 m por defecto) |
+| `free_ground_min` | tiempo admisible en tierra por parada (min) incluido en la tarifa; el **exceso se factura al cliente** a la tarifa horaria |
 | `price_per_hour` | tarifa por hora de vuelo |
 | `can_combine_pax_cargo` | ¿puede llevar pax y carga en el mismo vuelo? |
 | `mtow_kg` | **peso máximo de despegue**; también se usa para la habilitación en helipuertos |

@@ -485,7 +485,9 @@ def test_excel_entrada_y_salida():
         import openpyxl
 
         wb = openpyxl.load_workbook(out)
-        assert set(wb.sheetnames) == {"Resumen", "Programación", "Requerimientos"}
+        assert set(wb.sheetnames) == {
+            "Resumen", "Programación", "Tiempo en tierra", "Requerimientos"
+        }
         prog = wb["Programación"]
         cells = [str(row[0]) for row in prog.iter_rows(values_only=True) if row[0]]
         assert any(v.startswith("De MALV a ") for v in cells)
@@ -586,6 +588,58 @@ def test_velocidad_vertical_decide_modelo():
     plans = optimize_fleet(scn)
     assert plans[0].helicopter_id == "RAPIDO"
     assert plans[0].total_cost < plans[1].total_cost
+
+
+def test_tiempo_en_tierra_y_estadisticas():
+    from helilog.optimizer import ground_stats_by_company, plan_visits
+
+    heli = _heli("H1", pax_capacity=10, free_ground_min=5.0)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest(
+                "R1", "A", "B", pax=10, pax_weight_kg=1000.0, company="Empresa A"
+            ),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    visits = plan_visits(scn, heli, plan)
+    # Parada en A (embarque) y en B (desembarque): 10 pax y 1.000 kg movidos
+    # → 2 + 10×0.5 + 10×2 = 27 min cada una; admisible 5 → exceso 22 min
+    con_tierra = [v for v in visits if v["ground_min"] > 0]
+    assert len(con_tierra) == 2
+    for v in con_tierra:
+        assert abs(v["ground_min"] - 27.0) < 1e-9
+        assert abs(v["excess_min"] - 22.0) < 1e-9
+        assert abs(v["extra_cost"] - 22.0 / 60.0 * 2000.0) < 1e-6
+
+    stats = ground_stats_by_company(visits)
+    assert len(stats) == 1
+    s = stats[0]
+    assert s["company"] == "Empresa A"
+    assert s["stops"] == 2
+    assert s["min_ground_min"] == s["max_ground_min"] == s["avg_ground_min"] == 27.0
+    assert abs(s["total_excess_min"] - 44.0) < 1e-9
+
+    # El horario corre con el tiempo en tierra: la llegada a B es después
+    # de los 27 min en tierra de A más el vuelo
+    llegada_b = con_tierra[1]["arrive_h"]
+    assert llegada_b > 27.0 / 60.0
+
+
+def test_sin_limite_admisible_no_hay_cargo():
+    from helilog.optimizer import plan_visits
+
+    heli = _heli("H1")  # free_ground_min = 0 → sin límite
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("R1", "A", "B", pax=4, company="X")],
+    )
+    plan = optimize_route(scn, heli)
+    visits = plan_visits(scn, heli, plan)
+    assert all(v.get("excess_min", 0) == 0 for v in visits)
+    assert all(v.get("extra_cost", 0) == 0 for v in visits)
 
 
 def test_escenario_ejemplo_json():

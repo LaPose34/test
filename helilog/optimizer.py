@@ -476,6 +476,100 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
     )
 
 
+def plan_visits(scn: Scenario, heli: Helicopter, plan: RoutePlan) -> list[dict]:
+    """Agrupa la ruta en paradas, con tiempo en tierra estimado y horario.
+
+    Cada parada incluye: pad, tramo de llegada (from/km/hours/cost), acciones,
+    pax y kg movidos, empresas involucradas, minutos en tierra estimados,
+    exceso sobre el tiempo admisible del helicóptero y el cargo extra que
+    asume el cliente. `arrive_h`/`depart_h` son horas desde el inicio,
+    incluyendo el tiempo en tierra de las paradas anteriores.
+    """
+    by_id = {r.id: r for r in plan.requests}
+    visits: list[dict] = []
+    flight_t = 0.0
+    for leg in plan.legs:
+        flight_t += leg.hours
+        if leg.km > 0 or not visits:
+            visits.append(
+                {
+                    "pad": leg.to_pad,
+                    "from": leg.from_pad,
+                    "km": leg.km,
+                    "hours": leg.hours,
+                    "cost": leg.cost,
+                    "legs": [leg],
+                    "arrive_h": flight_t,
+                }
+            )
+        else:
+            visits[-1]["legs"].append(leg)
+
+    cum_ground_h = 0.0
+    for v in visits:
+        pax_moved = 0
+        kg_moved = 0.0
+        companies: set[str] = set()
+        for leg in v["legs"]:
+            action, _, rid = leg.action.partition(" ")
+            req = by_id.get(rid)
+            if action not in ("recoger", "entregar") or req is None:
+                continue
+            pax_moved += req.pax
+            kg_moved += scn.request_payload_kg(req)
+            if req.company:
+                companies.add(req.company)
+        if pax_moved or kg_moved:
+            ground_min = (
+                scn.ground_base_min
+                + pax_moved * scn.ground_min_per_pax
+                + kg_moved / 100.0 * scn.ground_min_per_100kg
+            )
+        else:
+            ground_min = 0.0
+        excess_min = (
+            max(0.0, ground_min - heli.free_ground_min) if heli.free_ground_min > 0 else 0.0
+        )
+        v["pax_moved"] = pax_moved
+        v["kg_moved"] = kg_moved
+        v["companies"] = sorted(companies)
+        v["ground_min"] = ground_min
+        v["excess_min"] = excess_min
+        v["extra_cost"] = excess_min / 60.0 * heli.price_per_hour
+        v["arrive_h"] += cum_ground_h
+        cum_ground_h += ground_min / 60.0
+        v["depart_h"] = v["arrive_h"] + ground_min / 60.0
+    return visits
+
+
+def ground_stats_by_company(visits: list[dict]) -> list[dict]:
+    """Estadística de tiempo en tierra por empresa: paradas, min/prom/max,
+    exceso total y cargo extra total. Las paradas con varias empresas se
+    cuentan para cada una; las sin empresa van como '(sin empresa)'."""
+    acc: dict[str, list[dict]] = {}
+    for v in visits:
+        if v.get("ground_min", 0.0) <= 0:
+            continue
+        for company in v["companies"] or ["(sin empresa)"]:
+            acc.setdefault(company, []).append(v)
+    out = []
+    for company in sorted(acc):
+        vs = acc[company]
+        mins = [v["ground_min"] for v in vs]
+        out.append(
+            {
+                "company": company,
+                "stops": len(vs),
+                "min_ground_min": min(mins),
+                "avg_ground_min": sum(mins) / len(mins),
+                "max_ground_min": max(mins),
+                "total_excess_min": sum(v["excess_min"] for v in vs),
+                "total_extra_cost": sum(v["extra_cost"] for v in vs),
+            }
+        )
+    return out
+
+
 def optimize_fleet(scn: Scenario) -> list[RoutePlan]:
     """Evalúa cada helicóptero de la flota; devuelve los planes ordenados por costo.
 

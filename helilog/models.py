@@ -63,6 +63,9 @@ class Helicopter:
     # Velocidad vertical (régimen de ascenso, m/s): cada despegue+aterrizaje
     # agrega tiempo de subida y bajada a la altitud de crucero. 0 = ignorar.
     vertical_speed_ms: float = 0.0
+    # Tiempo admisible en tierra por parada (minutos) incluido en la tarifa;
+    # el exceso se factura al cliente. 0 = sin límite (nada se factura).
+    free_ground_min: float = 0.0
 
     @property
     def has_takeoff_limit(self) -> bool:
@@ -192,6 +195,11 @@ class Scenario:
     fuel_density_kg_per_l: float = 0.8  # Jet A-1 ≈ 0.8 kg/L (peso del combustible)
     cruise_altitude_m: float = 300.0  # altitud de crucero sobre el terreno (AGL)
     return_to_base: bool = False  # ¿el helicóptero debe volver a su base al final?
+    # Estimación del tiempo en tierra por parada (minutos):
+    #   base + pax movidos × min/pax + kg movidos/100 × min/100kg
+    ground_base_min: float = 2.0
+    ground_min_per_pax: float = 0.5
+    ground_min_per_100kg: float = 2.0
 
     def distance_km(self, a: str, b: str) -> float:
         if a == b:
@@ -310,6 +318,7 @@ class Scenario:
                     mtow_kg=get("mtow_kg", 0.0),
                     size_class=get("size_class", 2),
                     vertical_speed_ms=get("vertical_speed_ms", 0.0),
+                    free_ground_min=get("free_ground_min", 0.0),
                 )
             )
 
@@ -360,6 +369,9 @@ class Scenario:
             fuel_density_kg_per_l=data.get("fuel_density_kg_per_l", 0.8),
             cruise_altitude_m=data.get("cruise_altitude_m", 300.0),
             return_to_base=data.get("return_to_base", False),
+            ground_base_min=data.get("ground_base_min", 2.0),
+            ground_min_per_pax=data.get("ground_min_per_pax", 0.5),
+            ground_min_per_100kg=data.get("ground_min_per_100kg", 2.0),
         )
         scenario.validate()
         return scenario

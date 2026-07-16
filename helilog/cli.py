@@ -7,7 +7,12 @@ import json
 import sys
 
 from .models import Scenario
-from .optimizer import RoutePlan, optimize_fleet
+from .optimizer import (
+    RoutePlan,
+    ground_stats_by_company,
+    optimize_fleet,
+    plan_visits,
+)
 
 
 def _format_plan(plan: RoutePlan, scn: Scenario) -> str:
@@ -132,5 +137,28 @@ def main(argv: list[str] | None = None) -> int:
         for plan in plans:
             print(_format_plan(plan, scn))
             print()
+
+        best = next((p for p in plans if p.feasible), None)
+        if best is not None:
+            heli = next(h for h in scn.helicopters if h.id == best.helicopter_id)
+            stats = ground_stats_by_company(plan_visits(scn, heli, best))
+            if stats:
+                print(
+                    f"Tiempo en tierra por cliente — {heli.name or heli.id}"
+                    f" (admisible {heli.free_ground_min:.0f} min/parada):"
+                )
+                for s in stats:
+                    line = (
+                        f"  {s['company']}: {s['stops']} paradas,"
+                        f" mín {s['min_ground_min']:.1f} /"
+                        f" prom {s['avg_ground_min']:.1f} /"
+                        f" máx {s['max_ground_min']:.1f} min"
+                    )
+                    if s["total_excess_min"] > 0:
+                        line += (
+                            f" | exceso {s['total_excess_min']:.1f} min"
+                            f" → cargo extra {s['total_extra_cost']:,.2f}"
+                        )
+                    print(line)
 
     return 0 if any(p.feasible for p in plans) else 1
