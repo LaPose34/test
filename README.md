@@ -50,12 +50,17 @@ no son línea recta).
 **Pasajeros individuales** (`passengers[]`): personas con su **peso real**:
 
 ```json
-{ "id": "P2", "name": "Luis Torres", "weight_kg": 102,
+{ "id": "P2", "name": "Luis Torres", "weight_kg": 102, "baggage_kg": 18,
   "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] }
 ```
 
-- `weight_kg` es el peso que cuenta contra la carga máxima del helicóptero
-  (en lugar del estándar `pax_weight_kg`).
+- **Seguridad — techo de peso**: contra la carga máxima del helicóptero cuenta
+  `weight_kg` (peso corporal real) **+ `baggage_kg`** (maleta/equipaje que
+  viaja con la persona), en lugar del estándar `pax_weight_kg`. Cada tramo del
+  plan reporta el desglose (pax + equipaje + carga) y el total contra el techo,
+  y el optimizador nunca genera un tramo que lo exceda.
+- El equipaje viaja siempre con su pasajero y **no** cuenta como "carga" para
+  la regla de no mezclar pax y carga.
 - `via` (opcional) son **escalas obligatorias en orden**: el pasajero aterriza
   en cada una antes de seguir a su destino final. Internamente cada tramo se
   vuelve una solicitud encadenada (`P2#1`, `P2#2`, …).
@@ -64,9 +69,10 @@ no son línea recta).
   aprovecha cuando abarata la ruta.
 
 **Solicitudes** (`requests[]`): grupos de pax y/o carga:
-`{"id", "origin", "destination", "pax", "cargo_kg", "pax_weight_kg", "after"}`.
-`pax_weight_kg` (opcional) es el peso real total del grupo; `after` (opcional)
-indica que esta recogida solo puede hacerse tras entregar otra solicitud.
+`{"id", "origin", "destination", "pax", "cargo_kg", "pax_weight_kg", "baggage_kg", "after"}`.
+`pax_weight_kg` (opcional) es el peso corporal real total del grupo y
+`baggage_kg` su equipaje; `after` (opcional) indica que esta recogida solo
+puede hacerse tras entregar otra solicitud.
 
 **Parámetros globales**: `pax_weight_kg`, `fuel_price_per_l` (0 si la tarifa
 horaria ya incluye combustible) y `return_to_base`.

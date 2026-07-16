@@ -71,6 +71,10 @@ class TransportRequest:
     `pax_weight_kg` es el peso REAL total de los pasajeros de esta solicitud;
     si es None se estima con `pax × Scenario.pax_weight_kg`.
 
+    `baggage_kg` es el equipaje que viaja CON los pasajeros: cuenta contra la
+    carga máxima del helicóptero (seguridad: techo de peso), pero no es
+    "carga" para la regla de no mezclar pax y carga.
+
     `after` encadena solicitudes: esta recogida solo puede hacerse cuando la
     solicitud referida ya fue entregada. Se usa para itinerarios multi-punto
     (un pax que visita varios helipuertos antes de su destino final).
@@ -82,12 +86,17 @@ class TransportRequest:
     pax: int = 0
     cargo_kg: float = 0.0
     pax_weight_kg: float | None = None
+    baggage_kg: float = 0.0
     after: str | None = None
 
 
 @dataclass(frozen=True)
 class Passenger:
-    """Una persona con su peso real y su itinerario.
+    """Una persona con su peso real, su equipaje y su itinerario.
+
+    Por seguridad, contra el techo de peso del helicóptero cuenta el peso
+    total de la persona: `weight_kg` (corporal) + `baggage_kg` (maleta). El
+    equipaje viaja siempre con el pasajero.
 
     `via` son escalas obligatorias, en orden, antes del destino final: el
     pasajero aterriza (y puede esperar) en cada una. Internamente se expande a
@@ -99,7 +108,12 @@ class Passenger:
     origin: str
     destination: str
     name: str = ""
+    baggage_kg: float = 0.0
     via: tuple[str, ...] = ()
+
+    @property
+    def total_kg(self) -> float:
+        return self.weight_kg + self.baggage_kg
 
     def to_requests(self) -> list[TransportRequest]:
         stops = [self.origin, *self.via, self.destination]
@@ -113,6 +127,7 @@ class Passenger:
                     destination=stops[k + 1],
                     pax=1,
                     pax_weight_kg=self.weight_kg,
+                    baggage_kg=self.baggage_kg,
                     after=chain[-1].id if chain else None,
                 )
             )
@@ -166,6 +181,11 @@ class Scenario:
         if req.pax_weight_kg is not None:
             return req.pax_weight_kg
         return req.pax * self.pax_weight_kg
+
+    def request_payload_kg(self, req: TransportRequest) -> float:
+        """Peso total de la solicitud contra el techo del helicóptero:
+        pax + equipaje + carga."""
+        return self.request_pax_weight_kg(req) + req.baggage_kg + req.cargo_kg
 
     def validate(self) -> None:
         ids = set()
@@ -249,6 +269,7 @@ class Scenario:
                 pax=raw.get("pax", 0),
                 cargo_kg=raw.get("cargo_kg", 0.0),
                 pax_weight_kg=raw.get("pax_weight_kg"),
+                baggage_kg=raw.get("baggage_kg", 0.0),
                 after=raw.get("after"),
             )
             for raw in data.get("requests", [])
@@ -260,6 +281,7 @@ class Scenario:
                 id=raw["id"],
                 name=raw.get("name", raw["id"]),
                 weight_kg=raw["weight_kg"],
+                baggage_kg=raw.get("baggage_kg", 0.0),
                 origin=raw["origin"],
                 destination=raw["destination"],
                 via=tuple(raw.get("via", [])),

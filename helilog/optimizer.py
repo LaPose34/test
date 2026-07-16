@@ -37,8 +37,14 @@ class Leg:
     cost: float
     action: str  # p. ej. "recoger R1", "entregar R1", "regreso a base"
     pax_onboard: int  # a bordo tras la acción
-    pax_kg_onboard: float  # peso real de los pax a bordo
+    pax_kg_onboard: float  # peso corporal real de los pax a bordo
+    baggage_kg_onboard: float  # equipaje de los pax a bordo
     cargo_onboard_kg: float
+
+    @property
+    def payload_kg(self) -> float:
+        """Peso total a bordo contra el techo del helicóptero."""
+        return self.pax_kg_onboard + self.baggage_kg_onboard + self.cargo_onboard_kg
     refueled_before: bool  # ¿se recargó combustible antes de despegar?
 
 
@@ -76,11 +82,11 @@ def _static_feasibility(
     for req in requests:
         if req.pax > heli.pax_capacity:
             return f"solicitud '{req.id}': {req.pax} pax excede capacidad ({heli.pax_capacity})"
-        payload = req.cargo_kg + scn.request_pax_weight_kg(req)
+        payload = scn.request_payload_kg(req)
         if payload > heli.max_payload_kg:
             return (
-                f"solicitud '{req.id}': {payload:.0f} kg excede carga máxima "
-                f"({heli.max_payload_kg:.0f} kg)"
+                f"solicitud '{req.id}': {payload:.0f} kg (pax + equipaje + carga) "
+                f"excede el techo de peso ({heli.max_payload_kg:.0f} kg)"
             )
         if req.pax > 0 and req.cargo_kg > 0 and not heli.can_combine_pax_cargo:
             return f"solicitud '{req.id}': el helicóptero no puede llevar pax y carga a la vez"
@@ -95,8 +101,8 @@ def _load_ok(scn: Scenario, heli: Helicopter, onboard_reqs: list[TransportReques
     cargo = sum(r.cargo_kg for r in onboard_reqs)
     if pax > heli.pax_capacity:
         return False
-    pax_kg = sum(scn.request_pax_weight_kg(r) for r in onboard_reqs)
-    if cargo + pax_kg > heli.max_payload_kg:
+    # Techo de peso (seguridad): pax + equipaje + carga, con pesos reales
+    if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg:
         return False
     if pax > 0 and cargo > 0 and not heli.can_combine_pax_cargo:
         return False
@@ -137,6 +143,7 @@ def _fly(
         action=action,
         pax_onboard=sum(r.pax for r in onboard_reqs),
         pax_kg_onboard=sum(scn.request_pax_weight_kg(r) for r in onboard_reqs),
+        baggage_kg_onboard=sum(r.baggage_kg for r in onboard_reqs),
         cargo_onboard_kg=sum(r.cargo_kg for r in onboard_reqs),
         refueled_before=refueled,
     )

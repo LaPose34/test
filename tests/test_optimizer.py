@@ -99,7 +99,7 @@ def test_pax_cuentan_como_peso():
     # 6*90 + 800 = 1340 > 1200
     plan = optimize_route(scn, scn.helicopters[0])
     assert not plan.feasible
-    assert "excede carga" in plan.infeasible_reason
+    assert "techo de peso" in plan.infeasible_reason
 
 
 def test_sin_mezcla_pax_carga():
@@ -237,6 +237,54 @@ def test_peso_individual_permite_compartir():
     plan = optimize_route(scn, heli)
     assert plan.feasible
     assert plan.total_km == 100.0
+
+
+def test_equipaje_cuenta_contra_techo_de_peso():
+    # 90 kg persona + 30 kg maleta cada uno: 2 × 120 = 240 > 200 → dos viajes
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=30.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=30.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 300.0
+    for leg in plan.legs:
+        assert leg.payload_kg <= heli.max_payload_kg
+
+
+def test_equipaje_excede_techo_es_inviable():
+    heli = _heli("H1", max_payload_kg=100)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=85.0, baggage_kg=25.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+    assert "techo de peso" in plan.infeasible_reason
+
+
+def test_equipaje_no_es_carga_para_regla_de_mezcla():
+    # Helicóptero que NO mezcla pax y carga: la maleta del pax SÍ puede volar con él
+    heli = _heli("H1", can_combine_pax_cargo=False)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0, baggage_kg=20.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 100.0
+
+
+def test_pasajero_json_con_equipaje():
+    p = Passenger(id="P", weight_kg=80, baggage_kg=15, origin="A", destination="B")
+    assert p.total_kg == 95
+    reqs = p.to_requests()
+    assert len(reqs) == 1
+    assert reqs[0].pax_weight_kg == 80 and reqs[0].baggage_kg == 15
 
 
 def test_pasajero_multi_punto_via():

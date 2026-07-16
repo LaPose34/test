@@ -83,8 +83,8 @@
   ],
 
   "passengers": [
-    { "id": "P1", "name": "Ana García", "weight_kg": 68, "origin": "BASE", "destination": "PLAT-A" },
-    { "id": "P2", "name": "Luis Torres", "weight_kg": 102, "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] },
-    { "id": "P3", "name": "Marta Ruiz", "weight_kg": 75, "origin": "PLAT-A", "destination": "HOSP" }
+    { "id": "P1", "name": "Ana García", "weight_kg": 68, "baggage_kg": 12, "origin": "BASE", "destination": "PLAT-A" },
+    { "id": "P2", "name": "Luis Torres", "weight_kg": 102, "baggage_kg": 18, "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] },
+    { "id": "P3", "name": "Marta Ruiz", "weight_kg": 75, "baggage_kg": 8, "origin": "PLAT-A", "destination": "HOSP" }
   ]
 }
