@@ -47,7 +47,26 @@ combustible), o el motivo por el que no es viable.
 tienen prioridad sobre el cálculo por coordenadas (útil para rutas reales que
 no son línea recta).
 
-**Solicitudes** (`requests[]`): `{"id", "origin", "destination", "pax", "cargo_kg"}`.
+**Pasajeros individuales** (`passengers[]`): personas con su **peso real**:
+
+```json
+{ "id": "P2", "name": "Luis Torres", "weight_kg": 102,
+  "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] }
+```
+
+- `weight_kg` es el peso que cuenta contra la carga máxima del helicóptero
+  (en lugar del estándar `pax_weight_kg`).
+- `via` (opcional) son **escalas obligatorias en orden**: el pasajero aterriza
+  en cada una antes de seguir a su destino final. Internamente cada tramo se
+  vuelve una solicitud encadenada (`P2#1`, `P2#2`, …).
+- Además, cualquier pasajero puede **seguir a bordo** mientras el helicóptero
+  hace otras paradas intermedias camino a su destino — el optimizador lo
+  aprovecha cuando abarata la ruta.
+
+**Solicitudes** (`requests[]`): grupos de pax y/o carga:
+`{"id", "origin", "destination", "pax", "cargo_kg", "pax_weight_kg", "after"}`.
+`pax_weight_kg` (opcional) es el peso real total del grupo; `after` (opcional)
+indica que esta recogida solo puede hacerse tras entregar otra solicitud.
 
 **Parámetros globales**: `pax_weight_kg`, `fuel_price_per_l` (0 si la tarifa
 horaria ya incluye combustible) y `return_to_base`.

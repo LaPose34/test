@@ -66,13 +66,57 @@ class Helicopter:
 
 @dataclass(frozen=True)
 class TransportRequest:
-    """Una solicitud: mover pax y/o carga de un helipuerto a otro."""
+    """Una solicitud: mover pax y/o carga de un helipuerto a otro.
+
+    `pax_weight_kg` es el peso REAL total de los pasajeros de esta solicitud;
+    si es None se estima con `pax × Scenario.pax_weight_kg`.
+
+    `after` encadena solicitudes: esta recogida solo puede hacerse cuando la
+    solicitud referida ya fue entregada. Se usa para itinerarios multi-punto
+    (un pax que visita varios helipuertos antes de su destino final).
+    """
 
     id: str
     origin: str
     destination: str
     pax: int = 0
     cargo_kg: float = 0.0
+    pax_weight_kg: float | None = None
+    after: str | None = None
+
+
+@dataclass(frozen=True)
+class Passenger:
+    """Una persona con su peso real y su itinerario.
+
+    `via` son escalas obligatorias, en orden, antes del destino final: el
+    pasajero aterriza (y puede esperar) en cada una. Internamente se expande a
+    una cadena de TransportRequest enlazadas con `after`.
+    """
+
+    id: str
+    weight_kg: float
+    origin: str
+    destination: str
+    name: str = ""
+    via: tuple[str, ...] = ()
+
+    def to_requests(self) -> list[TransportRequest]:
+        stops = [self.origin, *self.via, self.destination]
+        chain: list[TransportRequest] = []
+        for k in range(len(stops) - 1):
+            rid = self.id if len(stops) == 2 else f"{self.id}#{k + 1}"
+            chain.append(
+                TransportRequest(
+                    id=rid,
+                    origin=stops[k],
+                    destination=stops[k + 1],
+                    pax=1,
+                    pax_weight_kg=self.weight_kg,
+                    after=chain[-1].id if chain else None,
+                )
+            )
+        return chain
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -117,6 +161,12 @@ class Scenario:
         """Costo total por hora de vuelo: tarifa + combustible."""
         return heli.price_per_hour + heli.fuel_consumption_lph * self.fuel_price_per_l
 
+    def request_pax_weight_kg(self, req: TransportRequest) -> float:
+        """Peso de los pasajeros de la solicitud: real si se dio, estimado si no."""
+        if req.pax_weight_kg is not None:
+            return req.pax_weight_kg
+        return req.pax * self.pax_weight_kg
+
     def validate(self) -> None:
         ids = set()
         for heli in self.helicopters:
@@ -139,6 +189,21 @@ class Scenario:
                     )
             if req.pax <= 0 and req.cargo_kg <= 0:
                 raise ValueError(f"Solicitud '{req.id}': sin pax ni carga")
+        by_id = {r.id: r for r in self.requests}
+        for req in self.requests:
+            if req.after is None:
+                continue
+            if req.after not in by_id:
+                raise ValueError(
+                    f"Solicitud '{req.id}': 'after' apunta a '{req.after}', que no existe"
+                )
+            # detectar ciclos en la cadena de precedencias
+            seen, cur = {req.id}, req.after
+            while cur is not None:
+                if cur in seen:
+                    raise ValueError(f"Ciclo de precedencias 'after' en '{req.id}'")
+                seen.add(cur)
+                cur = by_id[cur].after
 
     # ------------------------------------------------------------------ JSON
 
@@ -183,9 +248,23 @@ class Scenario:
                 destination=raw["destination"],
                 pax=raw.get("pax", 0),
                 cargo_kg=raw.get("cargo_kg", 0.0),
+                pax_weight_kg=raw.get("pax_weight_kg"),
+                after=raw.get("after"),
             )
             for raw in data.get("requests", [])
         ]
+
+        # Los pasajeros individuales se expanden a cadenas de solicitudes
+        for raw in data.get("passengers", []):
+            passenger = Passenger(
+                id=raw["id"],
+                name=raw.get("name", raw["id"]),
+                weight_kg=raw["weight_kg"],
+                origin=raw["origin"],
+                destination=raw["destination"],
+                via=tuple(raw.get("via", [])),
+            )
+            requests.extend(passenger.to_requests())
 
         distances = {
             (raw["from"], raw["to"]): float(raw["km"])

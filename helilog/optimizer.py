@@ -37,6 +37,7 @@ class Leg:
     cost: float
     action: str  # p. ej. "recoger R1", "entregar R1", "regreso a base"
     pax_onboard: int  # a bordo tras la acción
+    pax_kg_onboard: float  # peso real de los pax a bordo
     cargo_onboard_kg: float
     refueled_before: bool  # ¿se recargó combustible antes de despegar?
 
@@ -75,7 +76,7 @@ def _static_feasibility(
     for req in requests:
         if req.pax > heli.pax_capacity:
             return f"solicitud '{req.id}': {req.pax} pax excede capacidad ({heli.pax_capacity})"
-        payload = req.cargo_kg + req.pax * scn.pax_weight_kg
+        payload = req.cargo_kg + scn.request_pax_weight_kg(req)
         if payload > heli.max_payload_kg:
             return (
                 f"solicitud '{req.id}': {payload:.0f} kg excede carga máxima "
@@ -94,7 +95,8 @@ def _load_ok(scn: Scenario, heli: Helicopter, onboard_reqs: list[TransportReques
     cargo = sum(r.cargo_kg for r in onboard_reqs)
     if pax > heli.pax_capacity:
         return False
-    if cargo + pax * scn.pax_weight_kg > heli.max_payload_kg:
+    pax_kg = sum(scn.request_pax_weight_kg(r) for r in onboard_reqs)
+    if cargo + pax_kg > heli.max_payload_kg:
         return False
     if pax > 0 and cargo > 0 and not heli.can_combine_pax_cargo:
         return False
@@ -134,6 +136,7 @@ def _fly(
         cost=cost,
         action=action,
         pax_onboard=sum(r.pax for r in onboard_reqs),
+        pax_kg_onboard=sum(scn.request_pax_weight_kg(r) for r in onboard_reqs),
         cargo_onboard_kg=sum(r.cargo_kg for r in onboard_reqs),
         refueled_before=refueled,
     )
@@ -151,8 +154,13 @@ def _successors(
     scn: Scenario, heli: Helicopter, state: _State, requests: list[TransportRequest]
 ):
     """Genera los estados alcanzables desde `state` (una acción por estado)."""
+    idx_by_id = {r.id: j for j, r in enumerate(requests)}
     for i in state.pending:
         req = requests[i]
+        if req.after is not None:
+            j = idx_by_id[req.after]
+            if j in state.pending or j in state.onboard:  # aún no entregada
+                continue
         onboard_after = state.onboard | {i}
         if not _load_ok(scn, heli, [requests[j] for j in onboard_after]):
             continue

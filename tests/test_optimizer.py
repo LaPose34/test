@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from helilog import Helicopter, Helipad, Scenario, TransportRequest
+from helilog import Helicopter, Helipad, Passenger, Scenario, TransportRequest
 from helilog.optimizer import optimize_fleet, optimize_route
 
 
@@ -207,6 +207,111 @@ def test_flota_elige_mas_barato():
     plans = optimize_fleet(scn)
     assert plans[0].helicopter_id == "BARATO"
     assert plans[0].total_cost < plans[1].total_cost
+
+
+def test_peso_individual_de_pasajeros():
+    # Dos personas de 150 kg: caben por pax (6) pero no por peso juntos
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=150.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=150.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 300.0  # dos viajes por peso real, no por conteo
+
+
+def test_peso_individual_permite_compartir():
+    # Las mismas dos personas pero de 90 kg sí comparten vuelo
+    heli = _heli("H1", max_payload_kg=200)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("P1", "A", "B", pax=1, pax_weight_kg=90.0),
+            TransportRequest("P2", "A", "B", pax=1, pax_weight_kg=90.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert plan.total_km == 100.0
+
+
+def test_pasajero_multi_punto_via():
+    # P debe aterrizar en B antes de llegar a C: la ruta directa A→C (150 km)
+    # queda prohibida; la ruta obligada es A→B→C (200 km).
+    passenger = Passenger(id="P", weight_kg=80, origin="A", destination="C", via=("B",))
+    scn = _scn(requests=passenger.to_requests())
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 200.0
+    actions = [l.action for l in plan.legs]
+    assert actions.index("entregar P#1") < actions.index("recoger P#2")
+
+
+def test_precedencia_after_se_respeta():
+    # R2 solo puede recogerse tras entregar R1 (mismo pad B)
+    scn = _scn(
+        requests=[
+            TransportRequest("R1", "A", "B", pax=1),
+            TransportRequest("R2", "B", "C", pax=1, after="R1"),
+        ]
+    )
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    actions = [l.action for l in plan.legs]
+    assert actions.index("entregar R1") < actions.index("recoger R2")
+
+
+def test_after_invalido_se_rechaza():
+    try:
+        _scn(
+            requests=[TransportRequest("R1", "A", "B", pax=1, after="NO-EXISTE")]
+        ).validate()
+    except ValueError as exc:
+        assert "after" in str(exc)
+    else:
+        raise AssertionError("se esperaba ValueError por 'after' inexistente")
+
+
+def test_passengers_en_json():
+    scn = Scenario.from_dict(
+        {
+            "helipads": [
+                {"id": "A", "has_fuel": True},
+                {"id": "B"},
+                {"id": "C"},
+            ],
+            "distances": [
+                {"from": "A", "to": "B", "km": 100},
+                {"from": "B", "to": "C", "km": 100},
+                {"from": "A", "to": "C", "km": 150},
+            ],
+            "helicopters": [
+                {
+                    "id": "H1",
+                    "pax_capacity": 6,
+                    "max_payload_kg": 1200,
+                    "fuel_consumption_lph": 200,
+                    "fuel_capacity_l": 600,
+                    "cruise_speed_kmh": 200,
+                    "price_per_hour": 2000,
+                    "base": "A",
+                    "size_class": 1,
+                }
+            ],
+            "passengers": [
+                {"id": "P1", "weight_kg": 95, "origin": "A", "destination": "C", "via": ["B"]},
+                {"id": "P2", "weight_kg": 70, "origin": "A", "destination": "B"},
+            ],
+        }
+    )
+    assert len(scn.requests) == 3  # P1 se expande en 2 tramos encadenados
+    plan = optimize_route(scn, scn.helicopters[0])
+    assert plan.feasible
+    assert plan.total_km == 200.0  # ambos comparten A→B; P1 sigue a C
 
 
 def test_escenario_ejemplo_json():

@@ -78,9 +78,13 @@
   ],
 
   "requests": [
-    { "id": "R1-personal", "origin": "BASE", "destination": "PLAT-A", "pax": 4 },
     { "id": "R2-refacciones", "origin": "PLAT-A", "destination": "PLAT-B", "cargo_kg": 300 },
-    { "id": "R3-relevo", "origin": "PLAT-B", "destination": "BASE", "pax": 3 },
-    { "id": "R4-medico", "origin": "PLAT-A", "destination": "HOSP", "pax": 1 }
+    { "id": "R3-relevo", "origin": "PLAT-B", "destination": "BASE", "pax": 3 }
+  ],
+
+  "passengers": [
+    { "id": "P1", "name": "Ana García", "weight_kg": 68, "origin": "BASE", "destination": "PLAT-A" },
+    { "id": "P2", "name": "Luis Torres", "weight_kg": 102, "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] },
+    { "id": "P3", "name": "Marta Ruiz", "weight_kg": 75, "origin": "PLAT-A", "destination": "HOSP" }
   ]
 }

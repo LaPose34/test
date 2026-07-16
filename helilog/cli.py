@@ -26,7 +26,8 @@ def _format_plan(plan: RoutePlan, scn: Scenario) -> str:
         lines.append(
             f"    {i}. {leg.from_pad} → {leg.to_pad}{fuel}: {leg.action}"
             f" ({leg.km:,.1f} km, {leg.hours:.2f} h, costo {leg.cost:,.2f};"
-            f" a bordo: {leg.pax_onboard} pax, {leg.cargo_onboard_kg:,.0f} kg)"
+            f" a bordo: {leg.pax_onboard} pax ({leg.pax_kg_onboard:,.0f} kg),"
+            f" carga {leg.cargo_onboard_kg:,.0f} kg)"
         )
     return "\n".join(lines)
 
@@ -49,6 +50,7 @@ def _plan_to_dict(plan: RoutePlan) -> dict:
                 "cost": round(leg.cost, 2),
                 "action": leg.action,
                 "pax_onboard": leg.pax_onboard,
+                "pax_kg_onboard": round(leg.pax_kg_onboard, 1),
                 "cargo_onboard_kg": round(leg.cargo_onboard_kg, 1),
                 "refueled_before": leg.refueled_before,
             }
