@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from . import catalog
 from .models import Helicopter, Helipad, Passenger, Scenario, TransportRequest
 from .optimizer import Leg, RoutePlan
 
@@ -133,21 +134,33 @@ def scenario_from_excel(path: str) -> tuple[Scenario, str]:
         hid = str(row[0] or "").strip()
         if not hid or hid.lower() == "id":
             continue
+        name = str(row[1] or hid).strip()
+        # Si el nombre coincide con un modelo del catálogo, las celdas
+        # técnicas vacías se completan con las especificaciones del modelo
+        # (capacidad pax permitida en Perú, MTOW, tanque, consumo, etc.).
+        specs = catalog.find(name) or {}
+
+        def cell(i, key, default=None):
+            v = row[i] if len(row) > i else None
+            if v is None or str(v).strip() == "":
+                return specs.get(key, default)
+            return float(v)
+
         helicopters.append(
             Helicopter(
                 id=hid,
-                name=str(row[1] or hid).strip(),
+                name=name,
                 base=str(row[2] or "").strip(),
-                pax_capacity=int(_num(row[3], 0)),
-                empty_weight_kg=_num(row[4], 0.0),
-                mtow_kg=_num(row[5], 0.0),
-                max_payload_kg=_num(row[6]),
-                fuel_consumption_lph=_num(row[7], 0.0),
-                fuel_capacity_l=_num(row[8], 0.0),
-                cruise_speed_kmh=_num(row[9], 0.0),
-                price_per_hour=_num(row[10], 0.0),
+                pax_capacity=int(cell(3, "pax_capacity", 0)),
+                empty_weight_kg=cell(4, "empty_weight_kg", 0.0),
+                mtow_kg=cell(5, "mtow_kg", 0.0),
+                max_payload_kg=cell(6, "max_payload_kg"),
+                fuel_consumption_lph=cell(7, "fuel_consumption_lph", 0.0),
+                fuel_capacity_l=cell(8, "fuel_capacity_l", 0.0),
+                cruise_speed_kmh=cell(9, "cruise_speed_kmh", 0.0),
+                price_per_hour=cell(10, "price_per_hour", 0.0),
                 can_combine_pax_cargo=_yes(row[11], True) if len(row) > 11 else True,
-                size_class=int(_num(row[12], 2)) if len(row) > 12 else 2,
+                size_class=int(cell(12, "size_class", 2)),
             )
         )
 

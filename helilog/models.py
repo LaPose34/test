@@ -268,24 +268,39 @@ class Scenario:
             )
             helipads[pad.id] = pad
 
-        helicopters = [
-            Helicopter(
-                id=raw["id"],
-                name=raw.get("name", raw["id"]),
-                pax_capacity=raw["pax_capacity"],
-                max_payload_kg=raw.get("max_payload_kg"),
-                empty_weight_kg=raw.get("empty_weight_kg", 0.0),
-                fuel_consumption_lph=raw["fuel_consumption_lph"],
-                fuel_capacity_l=raw["fuel_capacity_l"],
-                cruise_speed_kmh=raw["cruise_speed_kmh"],
-                price_per_hour=raw["price_per_hour"],
-                base=raw["base"],
-                can_combine_pax_cargo=raw.get("can_combine_pax_cargo", True),
-                mtow_kg=raw.get("mtow_kg", 0.0),
-                size_class=raw.get("size_class", 2),
+        helicopters = []
+        for raw in data.get("helicopters", []):
+            # Con "model" se toman las especificaciones del catálogo
+            # (capacidades permitidas en Perú) y el resto del dict las ajusta.
+            specs: dict = {}
+            if raw.get("model"):
+                from . import catalog
+
+                found = catalog.find(raw["model"])
+                if found is None:
+                    raise ValueError(f"Modelo '{raw['model']}' no está en el catálogo")
+                specs = found
+
+            def get(key, default=None):
+                return raw.get(key, specs.get(key, default))
+
+            helicopters.append(
+                Helicopter(
+                    id=raw["id"],
+                    name=get("name", raw["id"]),
+                    pax_capacity=get("pax_capacity"),
+                    max_payload_kg=get("max_payload_kg"),
+                    empty_weight_kg=get("empty_weight_kg", 0.0),
+                    fuel_consumption_lph=get("fuel_consumption_lph"),
+                    fuel_capacity_l=get("fuel_capacity_l"),
+                    cruise_speed_kmh=get("cruise_speed_kmh"),
+                    price_per_hour=raw["price_per_hour"],
+                    base=raw["base"],
+                    can_combine_pax_cargo=get("can_combine_pax_cargo", True),
+                    mtow_kg=get("mtow_kg", 0.0),
+                    size_class=get("size_class", 2),
+                )
             )
-            for raw in data.get("helicopters", [])
-        ]
 
         requests = [
             TransportRequest(

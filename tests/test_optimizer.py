@@ -504,6 +504,57 @@ def test_plantilla_excel():
         assert len(scn.helicopters) == 1
 
 
+def test_catalogo_capacidades_peru():
+    from helilog import catalog
+
+    assert catalog.find("Mi-171")["pax_capacity"] == 19
+    assert catalog.find("bell 412")["pax_capacity"] == 13
+    assert catalog.find("H145")["pax_capacity"] == 10
+    assert catalog.find("BK117")["pax_capacity"] == 10
+    assert catalog.find("EC-145")["pax_capacity"] == 10
+    assert catalog.find("modelo inexistente") is None
+
+
+def test_catalogo_make_y_json():
+    from helilog import catalog
+
+    heli = catalog.make("BELL412", id="OB1", base="A", price_per_hour=3000)
+    assert heli.pax_capacity == 13
+    assert heli.mtow_kg == 5398
+
+    scn = Scenario.from_dict(
+        {
+            "helipads": [{"id": "A"}],
+            "helicopters": [
+                {"id": "OB2", "model": "Mi-171", "base": "A", "price_per_hour": 5000,
+                 "pax_capacity": 17}  # el override manda sobre el catálogo
+            ],
+        }
+    )
+    assert scn.helicopters[0].pax_capacity == 17
+    assert scn.helicopters[0].mtow_kg == 13000
+
+
+def test_combustible_minimo_para_levantar_mas_carga():
+    # Con tanque lleno, el helicóptero llega tan pesado a B que no puede
+    # recoger la carga de regreso; cargando el mínimo seguro sí puede.
+    from helilog import catalog
+
+    heli = catalog.make("H145", id="H1", base="A", price_per_hour=2600)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[
+            TransportRequest("R1", "A", "B", pax=10, pax_weight_kg=1000.0),
+            TransportRequest("R2", "B", "A", cargo_kg=500.0),
+        ],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    for leg in plan.legs:
+        if leg.takeoff_kg is not None:
+            assert leg.takeoff_kg <= heli.mtow_kg + 1e-6
+
+
 def test_escenario_ejemplo_json():
     path = os.path.join(os.path.dirname(__file__), "..", "examples", "escenario_ejemplo.json")
     scn = Scenario.from_json_file(path)

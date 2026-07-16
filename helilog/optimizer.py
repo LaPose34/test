@@ -113,11 +113,14 @@ def _load_ok(scn: Scenario, heli: Helicopter, onboard_reqs: list[TransportReques
     cargo = sum(r.cargo_kg for r in onboard_reqs)
     if pax > heli.pax_capacity:
         return False
-    # Límite estructural de cabina (opcional); el límite de despegue con
-    # combustible se verifica en cada despegue dentro de _fly.
-    if heli.max_payload_kg is not None:
-        if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg + _KG_EPS:
-            return False
+    # Límite estructural de cabina (opcional) y cota de MTOW sin combustible;
+    # el límite de despegue CON combustible se verifica en cada despegue
+    # dentro de _fly, pero esta cota evita embarcar cargas imposibles.
+    payload = sum(scn.request_payload_kg(r) for r in onboard_reqs)
+    if heli.max_payload_kg is not None and payload > heli.max_payload_kg + _KG_EPS:
+        return False
+    if heli.has_takeoff_limit and heli.empty_weight_kg + payload > heli.mtow_kg + _KG_EPS:
+        return False
     if pax > 0 and cargo > 0 and not heli.can_combine_pax_cargo:
         return False
     return True
@@ -146,8 +149,17 @@ def _fly(
     onboard_after: frozenset,
     pending_after: frozenset,
     requests: list[TransportRequest],
+    fuel_hop: dict[str, float] | None = None,
+    fuel_policy: str = "cap",
 ) -> _State | None:
-    """Intenta volar un tramo; devuelve el nuevo estado o None si es inviable."""
+    """Intenta volar un tramo; devuelve el nuevo estado o None si es inviable.
+
+    `fuel_policy` decide cuánto combustible cargar antes de despegar de un
+    punto con combustible:
+      - "cap":  al máximo que el peso de despegue permite (máximo alcance).
+      - "safe": lo mínimo seguro — este tramo más el salto desde el destino
+        al punto de recarga más cercano (mínimo peso, máxima carga útil).
+    """
     km = scn.distance_km(state.pad, to_pad)
     hours = km / heli.cruise_speed_kmh if km > 0 else 0.0
     fuel_h = state.fuel_h
@@ -164,10 +176,15 @@ def _fly(
             return None
 
         pad_here = scn.helipads[state.pad]
-        if pad_here.has_fuel and fuel_h < fuel_cap_h - 1e-9:
-            # Carga combustible solo hasta lo que el peso de despegue permite
-            fuel_h = fuel_cap_h
-            refueled = True
+        if pad_here.has_fuel:
+            target = fuel_cap_h
+            if fuel_policy == "safe" and fuel_hop is not None:
+                hop = fuel_hop.get(to_pad, math.inf)
+                if hop != math.inf:
+                    target = min(fuel_cap_h, hours + hop + 1e-6)
+            if fuel_h < target - 1e-9:
+                fuel_h = target
+                refueled = True
         if fuel_h > fuel_cap_h + 1e-9:
             return None  # llegó con más combustible del que este despegue admite
         if hours > fuel_h + 1e-9:
@@ -208,8 +225,25 @@ def _fly(
     )
 
 
+def _fly_variants(scn, heli, state, to_pad, action, onboard_after, pending_after,
+                  requests, fuel_hop):
+    """El mismo tramo con las dos políticas de combustible (sin duplicados)."""
+    safe = _fly(scn, heli, state, to_pad, action, onboard_after, pending_after,
+                requests, fuel_hop, "safe")
+    cap = _fly(scn, heli, state, to_pad, action, onboard_after, pending_after,
+               requests, fuel_hop, "cap")
+    if safe is not None:
+        yield safe
+    if cap is not None and (safe is None or abs(cap.fuel_h - safe.fuel_h) > 1e-9):
+        yield cap
+
+
 def _successors(
-    scn: Scenario, heli: Helicopter, state: _State, requests: list[TransportRequest]
+    scn: Scenario,
+    heli: Helicopter,
+    state: _State,
+    requests: list[TransportRequest],
+    fuel_hop: dict[str, float],
 ):
     """Genera los estados alcanzables desde `state` (una acción por estado)."""
     idx_by_id = {r.id: j for j, r in enumerate(requests)}
@@ -222,55 +256,57 @@ def _successors(
         onboard_after = state.onboard | {i}
         if not _load_ok(scn, heli, [requests[j] for j in onboard_after]):
             continue
-        nxt = _fly(
-            scn,
-            heli,
-            state,
-            req.origin,
-            f"recoger {req.id}",
-            onboard_after,
-            state.pending - {i},
-            requests,
+        yield from _fly_variants(
+            scn, heli, state, req.origin, f"recoger {req.id}",
+            onboard_after, state.pending - {i}, requests, fuel_hop,
         )
-        if nxt is not None:
-            yield nxt
     for i in state.onboard:
         req = requests[i]
-        nxt = _fly(
-            scn,
-            heli,
-            state,
-            req.destination,
-            f"entregar {req.id}",
-            state.onboard - {i},
-            state.pending,
-            requests,
+        yield from _fly_variants(
+            scn, heli, state, req.destination, f"entregar {req.id}",
+            state.onboard - {i}, state.pending, requests, fuel_hop,
         )
-        if nxt is not None:
-            yield nxt
 
 
-def _finish(scn: Scenario, heli: Helicopter, state: _State, requests) -> _State | None:
+def _finish(scn, heli, state: _State, requests, fuel_hop) -> _State | None:
     """Aplica el regreso a base si el escenario lo exige."""
     if not scn.return_to_base or state.pad == heli.base:
         return state
     return _fly(
-        scn, heli, state, heli.base, "regreso a base", frozenset(), frozenset(), requests
+        scn, heli, state, heli.base, "regreso a base", frozenset(), frozenset(),
+        requests, fuel_hop, "cap",
     )
 
 
-def _greedy(scn: Scenario, heli: Helicopter, requests, start: _State) -> _State | None:
-    """Heurística voraz: siempre la siguiente acción viable más barata."""
-    state = start
-    while state.pending or state.onboard:
-        best = None
-        for nxt in _successors(scn, heli, state, requests):
-            if best is None or nxt.cost < best.cost:
-                best = nxt
-        if best is None:
-            return None
-        state = best
-    return _finish(scn, heli, state, requests)
+MAX_SEARCH_NODES = 200_000
+
+
+def _first_solution(
+    scn: Scenario, heli: Helicopter, requests, start: _State, fuel_hop
+) -> _State | None:
+    """Heurística: búsqueda en profundidad guiada por costo con vuelta atrás.
+
+    Explora primero la acción más barata (como la voraz) pero, si un camino
+    se atasca (combustible/peso), retrocede y prueba alternativas, hasta un
+    tope de nodos. Devuelve la primera solución completa encontrada.
+    """
+    stack = [start]
+    nodes = 0
+    while stack and nodes < MAX_SEARCH_NODES:
+        state = stack.pop()
+        nodes += 1
+        if not state.pending and not state.onboard:
+            done = _finish(scn, heli, state, requests, fuel_hop)
+            if done is not None:
+                return done
+            continue
+        succ = sorted(
+            _successors(scn, heli, state, requests, fuel_hop),
+            key=lambda s: s.cost,
+            reverse=True,  # la pila saca primero el más barato
+        )
+        stack.extend(succ)
+    return None
 
 
 def _chunk_units_for_heli(scn: Scenario, heli: Helicopter, req: TransportRequest) -> int:
@@ -360,6 +396,22 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
             requests=requests,
         )
 
+    # Horas de vuelo desde cada punto hasta su recarga más cercana (para la
+    # política de combustible "mínimo seguro").
+    fuel_hop: dict[str, float] = {}
+    for pid, pad in scn.helipads.items():
+        if pad.has_fuel:
+            fuel_hop[pid] = 0.0
+            continue
+        best_h = math.inf
+        for fid, fpad in scn.helipads.items():
+            if fpad.has_fuel:
+                try:
+                    best_h = min(best_h, scn.distance_km(pid, fid) / heli.cruise_speed_kmh)
+                except ValueError:
+                    continue
+        fuel_hop[pid] = best_h
+
     # Si la base tiene combustible, se carga justo antes del primer despegue
     # (limitado por el MTOW); si no, se asume que llega con tanque lleno.
     base_has_fuel = scn.helipads[heli.base].has_fuel
@@ -372,7 +424,7 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
         legs=(),
     )
 
-    best = _greedy(scn, heli, requests, start)
+    best = _first_solution(scn, heli, requests, start, fuel_hop)
     method = "heurístico"
 
     if len(requests) <= MAX_EXACT_REQUESTS:
@@ -383,11 +435,11 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
             if best is not None and state.cost >= best.cost:
                 continue
             if not state.pending and not state.onboard:
-                done = _finish(scn, heli, state, requests)
+                done = _finish(scn, heli, state, requests, fuel_hop)
                 if done is not None and (best is None or done.cost < best.cost):
                     best = done
                 continue
-            stack.extend(_successors(scn, heli, state, requests))
+            stack.extend(_successors(scn, heli, state, requests, fuel_hop))
 
     if best is None:
         if len(requests) > MAX_EXACT_REQUESTS:

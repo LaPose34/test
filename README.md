@@ -43,6 +43,35 @@ horómetro, costo, filas E/D de embarque/desembarque con `DEST:`/`ORIG:`,
 unidades, kg y hora estimada de cada despegue), más hojas **Resumen** (ranking
 de la flota) y **Requerimientos** (eco de la demanda).
 
+## Catálogo de modelos (capacidades permitidas en Perú)
+
+| Modelo | Pax permitidos | MTOW | Tanque |
+|---|---|---|---|
+| Mi-171 | **19** | 13.000 kg | 2.615 L |
+| Bell 412EP | **13** | 5.398 kg | 1.251 L |
+| Airbus H145 | **10** | 3.700 kg | 723 L |
+| BK117 | **10** | 3.350 kg | 697 L |
+| Airbus H125 | 5 | 2.250 kg | 540 L |
+
+En el Excel basta poner el **nombre del modelo** en la columna Nombre y dejar
+las celdas técnicas vacías: se completan desde el catálogo (solo son
+obligatorios Id, Base y Precio por hora). En JSON se usa `"model": "Bell 412"`.
+Cualquier valor escrito manda sobre el catálogo (la configuración real de
+cada matrícula puede diferir). Alias reconocidos: `Mi-171/Mi-8/Mi-17`,
+`Bell 412/B412`, `H145/EC145/BK117 D-2`, `BK117/BK117 C-2`, `H125/AS350`.
+
+## Combustible como decisión
+
+Cuánto combustible cargar en cada parada con recarga lo decide el
+optimizador entre dos políticas, con vuelta atrás si una no funciona:
+
+- **al tope** que permite el peso de despegue (máximo alcance, menos recargas), o
+- **el mínimo seguro**: el tramo actual más el salto desde el destino hasta la
+  recarga más cercana (mínimo peso ⇒ máxima carga útil en el destino).
+
+Esto refleja la operación real: para recoger una carga pesada en una
+plataforma sin combustible conviene llegar con poco combustible.
+
 ### Requerimientos divisibles (rotaciones)
 
 Un requerimiento marcado como **Divisible** se reparte automáticamente en
