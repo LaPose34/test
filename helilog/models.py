@@ -38,18 +38,33 @@ class Helipad:
 
 @dataclass(frozen=True)
 class Helicopter:
+    """El límite de peso lo pone el helicóptero, no la persona.
+
+    Si se dan `empty_weight_kg` y `mtow_kg`, en CADA despegue se exige:
+
+        peso vacío + combustible a bordo + pax + equipaje + carga ≤ MTOW
+
+    `max_payload_kg` es un límite estructural de cabina adicional y opcional.
+    """
+
     id: str
     pax_capacity: int
-    max_payload_kg: float
     fuel_consumption_lph: float  # litros por hora
     fuel_capacity_l: float
     cruise_speed_kmh: float
     price_per_hour: float  # tarifa horaria (sin combustible si fuel_price_per_l > 0)
     base: str  # id del helipuerto donde inicia
     name: str = ""
+    max_payload_kg: float | None = None  # límite de cabina opcional
+    empty_weight_kg: float = 0.0  # peso vacío operativo
     can_combine_pax_cargo: bool = True  # ¿puede llevar pax y carga en el mismo vuelo?
-    mtow_kg: float = 0.0  # peso máximo al despegue (para restricciones de helipad)
+    mtow_kg: float = 0.0  # peso máximo de despegue (y restricción de helipads)
     size_class: int = 2  # 1=S, 2=M, 3=L
+
+    @property
+    def has_takeoff_limit(self) -> bool:
+        """¿Hay datos para aplicar el límite de peso de despegue?"""
+        return self.empty_weight_kg > 0 and self.mtow_kg > 0
 
     @property
     def endurance_h(self) -> float:
@@ -156,6 +171,7 @@ class Scenario:
     distances: dict[tuple[str, str], float] = field(default_factory=dict)
     pax_weight_kg: float = 90.0  # peso estándar por pasajero (cuenta como payload)
     fuel_price_per_l: float = 0.0  # 0 si la tarifa horaria ya incluye combustible
+    fuel_density_kg_per_l: float = 0.8  # Jet A-1 ≈ 0.8 kg/L (peso del combustible)
     return_to_base: bool = False  # ¿el helicóptero debe volver a su base al final?
 
     def distance_km(self, a: str, b: str) -> float:
@@ -248,7 +264,8 @@ class Scenario:
                 id=raw["id"],
                 name=raw.get("name", raw["id"]),
                 pax_capacity=raw["pax_capacity"],
-                max_payload_kg=raw["max_payload_kg"],
+                max_payload_kg=raw.get("max_payload_kg"),
+                empty_weight_kg=raw.get("empty_weight_kg", 0.0),
                 fuel_consumption_lph=raw["fuel_consumption_lph"],
                 fuel_capacity_l=raw["fuel_capacity_l"],
                 cruise_speed_kmh=raw["cruise_speed_kmh"],
@@ -300,6 +317,7 @@ class Scenario:
             distances=distances,
             pax_weight_kg=data.get("pax_weight_kg", 90.0),
             fuel_price_per_l=data.get("fuel_price_per_l", 0.0),
+            fuel_density_kg_per_l=data.get("fuel_density_kg_per_l", 0.8),
             return_to_base=data.get("return_to_base", False),
         )
         scenario.validate()

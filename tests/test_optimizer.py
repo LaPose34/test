@@ -287,6 +287,70 @@ def test_pasajero_json_con_equipaje():
     assert reqs[0].pax_weight_kg == 80 and reqs[0].baggage_kg == 15
 
 
+def test_limite_de_despegue_reduce_combustible():
+    # MTOW 2000, vacío 1000 → margen 1000 kg. Tanque lleno pesa 400 kg
+    # (500 L × 0.8). Con 700 kg de grupo no cabe tanque lleno, pero cargando
+    # solo el combustible permitido (300 kg) el vuelo corto sale bien.
+    heli = _heli(
+        "H1",
+        max_payload_kg=None,
+        empty_weight_kg=1000,
+        mtow_kg=2000,
+        fuel_capacity_l=500,
+    )
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    for leg in plan.legs:
+        if leg.takeoff_kg is not None:
+            assert leg.takeoff_kg <= heli.mtow_kg + 1e-6
+
+
+def test_llega_con_tanque_lleno_y_excede_mtow():
+    # La base NO tiene combustible: llega con tanque lleno (400 kg) que no
+    # puede descargar → 1000 + 400 + 700 = 2100 > 2000 → inviable.
+    heli = _heli(
+        "H1",
+        max_payload_kg=None,
+        empty_weight_kg=1000,
+        mtow_kg=2000,
+        fuel_capacity_l=500,
+    )
+    scn = _scn(
+        helipads={"A": _pad("A"), "B": _pad("B"), "C": _pad("C")},
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+
+
+def test_mtow_excedido_aun_sin_combustible():
+    heli = _heli("H1", max_payload_kg=None, empty_weight_kg=1900, mtow_kg=2000)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=2, pax_weight_kg=200.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert not plan.feasible
+    assert "peso máximo de despegue" in plan.infeasible_reason
+
+
+def test_sin_datos_de_peso_vacio_no_aplica_mtow():
+    # Sin empty_weight_kg el límite de despegue no puede calcularse y no aplica
+    heli = _heli("H1", mtow_kg=2000)  # empty_weight_kg = 0
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("G1", "A", "B", pax=6, pax_weight_kg=700.0)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    assert all(l.takeoff_kg is None for l in plan.legs)
+
+
 def test_pasajero_multi_punto_via():
     # P debe aterrizar en B antes de llegar a C: la ruta directa A→C (150 km)
     # queda prohibida; la ruta obligada es A→B→C (200 km).

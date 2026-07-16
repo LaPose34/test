@@ -40,12 +40,14 @@ class Leg:
     pax_kg_onboard: float  # peso corporal real de los pax a bordo
     baggage_kg_onboard: float  # equipaje de los pax a bordo
     cargo_onboard_kg: float
+    refueled_before: bool  # ¿se cargó combustible antes de despegar?
+    fuel_l_takeoff: float = 0.0  # litros a bordo al despegar este tramo
+    takeoff_kg: float | None = None  # peso total al despegue (None si no hay datos)
 
     @property
     def payload_kg(self) -> float:
-        """Peso total a bordo contra el techo del helicóptero."""
+        """Peso total a bordo (tras la acción) contra los límites del helicóptero."""
         return self.pax_kg_onboard + self.baggage_kg_onboard + self.cargo_onboard_kg
-    refueled_before: bool  # ¿se recargó combustible antes de despegar?
 
 
 @dataclass
@@ -83,10 +85,16 @@ def _static_feasibility(
         if req.pax > heli.pax_capacity:
             return f"solicitud '{req.id}': {req.pax} pax excede capacidad ({heli.pax_capacity})"
         payload = scn.request_payload_kg(req)
-        if payload > heli.max_payload_kg:
+        if heli.max_payload_kg is not None and payload > heli.max_payload_kg:
             return (
                 f"solicitud '{req.id}': {payload:.0f} kg (pax + equipaje + carga) "
                 f"excede el techo de peso ({heli.max_payload_kg:.0f} kg)"
+            )
+        if heli.has_takeoff_limit and heli.empty_weight_kg + payload > heli.mtow_kg:
+            return (
+                f"solicitud '{req.id}': {heli.empty_weight_kg + payload:.0f} kg "
+                f"(vacío + pax + equipaje + carga) excede el peso máximo de "
+                f"despegue ({heli.mtow_kg:.0f} kg) incluso sin combustible"
             )
         if req.pax > 0 and req.cargo_kg > 0 and not heli.can_combine_pax_cargo:
             return f"solicitud '{req.id}': el helicóptero no puede llevar pax y carga a la vez"
@@ -101,12 +109,28 @@ def _load_ok(scn: Scenario, heli: Helicopter, onboard_reqs: list[TransportReques
     cargo = sum(r.cargo_kg for r in onboard_reqs)
     if pax > heli.pax_capacity:
         return False
-    # Techo de peso (seguridad): pax + equipaje + carga, con pesos reales
-    if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg:
-        return False
+    # Límite estructural de cabina (opcional); el límite de despegue con
+    # combustible se verifica en cada despegue dentro de _fly.
+    if heli.max_payload_kg is not None:
+        if sum(scn.request_payload_kg(r) for r in onboard_reqs) > heli.max_payload_kg:
+            return False
     if pax > 0 and cargo > 0 and not heli.can_combine_pax_cargo:
         return False
     return True
+
+
+def _max_fuel_h(scn: Scenario, heli: Helicopter, payload_kg: float) -> float:
+    """Máximo combustible (en horas de vuelo) admisible al despegar con esta
+    carga sin exceder el peso máximo de despegue. -1 si ni con tanque vacío cabe."""
+    if not heli.has_takeoff_limit:
+        return heli.endurance_h
+    avail_kg = heli.mtow_kg - heli.empty_weight_kg - payload_kg
+    if avail_kg < -1e-9:
+        return -1.0
+    if heli.fuel_consumption_lph <= 0:
+        return heli.endurance_h
+    fuel_l = avail_kg / scn.fuel_density_kg_per_l
+    return min(heli.endurance_h, fuel_l / heli.fuel_consumption_lph)
 
 
 def _fly(
@@ -120,17 +144,38 @@ def _fly(
     requests: list[TransportRequest],
 ) -> _State | None:
     """Intenta volar un tramo; devuelve el nuevo estado o None si es inviable."""
-    fuel_h = state.fuel_h
-    refueled = False
-    pad_here = scn.helipads[state.pad]
-    if pad_here.has_fuel and fuel_h < heli.endurance_h:
-        fuel_h = heli.endurance_h
-        refueled = True
-
     km = scn.distance_km(state.pad, to_pad)
     hours = km / heli.cruise_speed_kmh if km > 0 else 0.0
-    if hours > fuel_h + 1e-9:
-        return None
+    fuel_h = state.fuel_h
+    refueled = False
+    fuel_l_takeoff = fuel_h * heli.fuel_consumption_lph if heli.fuel_consumption_lph > 0 else 0.0
+    takeoff_kg = None
+
+    if km > 0:
+        # Solo hay despegue real si el tramo se vuela. La carga que VUELA es
+        # la de antes de la acción (la acción ocurre al aterrizar en `to_pad`).
+        payload_flying = sum(scn.request_payload_kg(requests[i]) for i in state.onboard)
+        fuel_cap_h = _max_fuel_h(scn, heli, payload_flying)
+        if fuel_cap_h < 0:
+            return None
+
+        pad_here = scn.helipads[state.pad]
+        if pad_here.has_fuel and fuel_h < fuel_cap_h - 1e-9:
+            # Carga combustible solo hasta lo que el peso de despegue permite
+            fuel_h = fuel_cap_h
+            refueled = True
+        if fuel_h > fuel_cap_h + 1e-9:
+            return None  # llegó con más combustible del que este despegue admite
+        if hours > fuel_h + 1e-9:
+            return None
+
+        fuel_l_takeoff = fuel_h * heli.fuel_consumption_lph if heli.fuel_consumption_lph > 0 else 0.0
+        if heli.has_takeoff_limit:
+            takeoff_kg = (
+                heli.empty_weight_kg
+                + fuel_l_takeoff * scn.fuel_density_kg_per_l
+                + payload_flying
+            )
 
     cost = hours * scn.cost_per_flight_hour(heli)
     onboard_reqs = [requests[i] for i in onboard_after]
@@ -146,6 +191,8 @@ def _fly(
         baggage_kg_onboard=sum(r.baggage_kg for r in onboard_reqs),
         cargo_onboard_kg=sum(r.cargo_kg for r in onboard_reqs),
         refueled_before=refueled,
+        fuel_l_takeoff=fuel_l_takeoff,
+        takeoff_kg=takeoff_kg,
     )
     return _State(
         pad=to_pad,
@@ -229,9 +276,12 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
     if reason:
         return RoutePlan(helicopter_id=heli.id, feasible=False, infeasible_reason=reason)
 
+    # Si la base tiene combustible, se carga justo antes del primer despegue
+    # (limitado por el MTOW); si no, se asume que llega con tanque lleno.
+    base_has_fuel = scn.helipads[heli.base].has_fuel
     start = _State(
         pad=heli.base,
-        fuel_h=heli.endurance_h,
+        fuel_h=0.0 if base_has_fuel else heli.endurance_h,
         cost=0.0,
         pending=frozenset(range(len(requests))),
         onboard=frozenset(),

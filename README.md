@@ -24,13 +24,15 @@ combustible), o el motivo por el que no es viable.
 | Campo | Significado |
 |---|---|
 | `pax_capacity` | capacidad de pasajeros |
-| `max_payload_kg` | carga máxima en kg (los pax cuentan con `pax_weight_kg`, 90 kg por defecto) |
+| `empty_weight_kg` | peso vacío operativo; junto con `mtow_kg` activa el límite de despegue |
+| `max_payload_kg` | (opcional) límite estructural de cabina adicional |
 | `fuel_consumption_lph` | consumo de combustible en litros por hora |
 | `fuel_capacity_l` | capacidad del tanque (define la autonomía) |
 | `cruise_speed_kmh` | velocidad crucero |
 | `price_per_hour` | tarifa por hora de vuelo |
 | `can_combine_pax_cargo` | ¿puede llevar pax y carga en el mismo vuelo? |
-| `mtow_kg`, `size_class` | peso y tamaño (1=S, 2=M, 3=L), para la habilitación en helipuertos |
+| `mtow_kg` | **peso máximo de despegue**; también se usa para la habilitación en helipuertos |
+| `size_class` | tamaño (1=S, 2=M, 3=L), para la habilitación en helipuertos |
 | `base` | helipuerto donde inicia (y termina, si `return_to_base` es `true`) |
 
 **Helipuerto** (`helipads[]`):
@@ -54,11 +56,19 @@ no son línea recta).
   "origin": "BASE", "destination": "PLAT-B", "via": ["PLAT-A"] }
 ```
 
-- **Seguridad — techo de peso**: contra la carga máxima del helicóptero cuenta
-  `weight_kg` (peso corporal real) **+ `baggage_kg`** (maleta/equipaje que
-  viaja con la persona), en lugar del estándar `pax_weight_kg`. Cada tramo del
-  plan reporta el desglose (pax + equipaje + carga) y el total contra el techo,
-  y el optimizador nunca genera un tramo que lo exceda.
+- **Seguridad — límite de despegue**: no hay límite de peso por persona; el
+  límite lo pone el helicóptero. En **cada despegue** se exige:
+
+  ```
+  peso vacío + combustible a bordo + pax + equipaje + carga  ≤  MTOW
+  ```
+
+  con el peso real de cada persona (`weight_kg` + `baggage_kg`) y el peso del
+  combustible (`fuel_density_kg_per_l`, 0.8 kg/L por defecto). En helipuertos
+  con combustible se carga **solo hasta lo que el MTOW permite** con la carga
+  a bordo (más carga útil ⇒ menos combustible). Cada tramo del plan reporta el
+  peso de despegue contra el MTOW y los litros a bordo; el optimizador nunca
+  genera un despegue que lo exceda.
 - El equipaje viaja siempre con su pasajero y **no** cuenta como "carga" para
   la regla de no mezclar pax y carga.
 - `via` (opcional) son **escalas obligatorias en orden**: el pasajero aterriza
