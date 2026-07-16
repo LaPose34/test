@@ -92,6 +92,7 @@ de cada parte se calcula por helicóptero según sus asientos, cabina y MTOW.
 | `fuel_consumption_lph` | consumo de combustible en litros por hora |
 | `fuel_capacity_l` | capacidad del tanque (define la autonomía) |
 | `cruise_speed_kmh` | velocidad crucero |
+| `vertical_speed_ms` | velocidad vertical (m/s): cada despegue+aterrizaje suma tiempo de ascenso y descenso a la altitud de crucero (`cruise_altitude_m`, 300 m por defecto) |
 | `price_per_hour` | tarifa por hora de vuelo |
 | `can_combine_pax_cargo` | ¿puede llevar pax y carga en el mismo vuelo? |
 | `mtow_kg` | **peso máximo de despegue**; también se usa para la habilitación en helipuertos |
@@ -152,6 +153,11 @@ horaria ya incluye combustible) y `return_to_base`.
 
 ## Cómo optimiza
 
+- Horas de un tramo = `km / velocidad crucero + 2 × altitud / velocidad vertical`:
+  el tiempo de maniobra vertical se paga en **cada** despegue y aterrizaje, así
+  que el perfil de los pedidos decide el modelo — tramos largos favorecen al
+  crucero rápido; muchas paradas cortas favorecen al de ascenso rápido y hora
+  barata, aunque su tarifa sea mayor.
 - Costo de un tramo = horas de vuelo × (tarifa horaria + consumo L/h × precio del litro).
 - Para cada helicóptero se resuelve un problema de recogida y entrega con
   **búsqueda exacta (ramificación y poda)** hasta 8 solicitudes; por encima se

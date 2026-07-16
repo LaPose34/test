@@ -49,6 +49,7 @@ CONFIG_KEYS = {
     "peso estándar pax": "pax_weight_kg",
     "precio combustible": "fuel_price_per_l",
     "densidad combustible": "fuel_density_kg_per_l",
+    "altitud de crucero": "cruise_altitude_m",
     "regreso a base": "return_to_base",
     "hora inicio": "start_time",
 }
@@ -161,6 +162,7 @@ def scenario_from_excel(path: str) -> tuple[Scenario, str]:
                 price_per_hour=cell(10, "price_per_hour", 0.0),
                 can_combine_pax_cargo=_yes(row[11], True) if len(row) > 11 else True,
                 size_class=int(cell(12, "size_class", 2)),
+                vertical_speed_ms=cell(13, "vertical_speed_ms", 0.0),
             )
         )
 
@@ -240,6 +242,7 @@ def write_template(path: str) -> None:
             ("Peso estándar pax (kg)", 90),
             ("Precio combustible (por L)", 0),
             ("Densidad combustible (kg/L)", 0.8),
+            ("Altitud de crucero (m)", 300),
             ("Regreso a base", "SI"),
             ("Hora inicio", "09:00"),
         ],
@@ -271,9 +274,10 @@ def write_template(path: str) -> None:
         "Helicopteros",
         ["Id", "Nombre", "Base", "Pax", "Peso vacío (kg)", "MTOW (kg)",
          "Cabina máx (kg)", "Consumo (L/h)", "Tanque (L)", "Velocidad (km/h)",
-         "Precio por hora", "Pax+carga juntos (SI/NO)", "Tamaño (1-3)"],
-        [["OB2106", "Bell 412EP", "MALV", 13, 3070, 5400, 1000, 420, 1250, 230,
-          3500, "SI", 2]],
+         "Precio por hora", "Pax+carga juntos (SI/NO)", "Tamaño (1-3)",
+         "Vel. vertical (m/s)"],
+        [["OB2106", "Bell 412EP", "MALV", None, None, None, 1000, None, None,
+          None, 3500, "SI", None, None]],
     )
     add(
         "Requerimientos",

@@ -21,6 +21,7 @@ SPECS: dict[str, dict] = {
         fuel_capacity_l=2615,
         fuel_consumption_lph=650,
         cruise_speed_kmh=230,
+        vertical_speed_ms=8.0,  # régimen de ascenso típico (m/s)
         size_class=3,
     ),
     "BELL412": dict(
@@ -31,6 +32,7 @@ SPECS: dict[str, dict] = {
         fuel_capacity_l=1251,
         fuel_consumption_lph=420,
         cruise_speed_kmh=226,
+        vertical_speed_ms=6.9,  # régimen de ascenso típico (m/s)
         size_class=2,
     ),
     "H145": dict(
@@ -41,6 +43,7 @@ SPECS: dict[str, dict] = {
         fuel_capacity_l=723,
         fuel_consumption_lph=260,
         cruise_speed_kmh=240,
+        vertical_speed_ms=8.1,  # régimen de ascenso típico (m/s)
         size_class=2,
     ),
     "BK117": dict(
@@ -51,6 +54,7 @@ SPECS: dict[str, dict] = {
         fuel_capacity_l=697,
         fuel_consumption_lph=250,
         cruise_speed_kmh=230,
+        vertical_speed_ms=8.4,  # régimen de ascenso típico (m/s)
         size_class=2,
     ),
     "H125": dict(
@@ -61,6 +65,7 @@ SPECS: dict[str, dict] = {
         fuel_capacity_l=540,
         fuel_consumption_lph=195,
         cruise_speed_kmh=220,
+        vertical_speed_ms=9.0,  # régimen de ascenso típico (m/s)
         size_class=1,
     ),
 }

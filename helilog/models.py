@@ -60,11 +60,20 @@ class Helicopter:
     can_combine_pax_cargo: bool = True  # ¿puede llevar pax y carga en el mismo vuelo?
     mtow_kg: float = 0.0  # peso máximo de despegue (y restricción de helipads)
     size_class: int = 2  # 1=S, 2=M, 3=L
+    # Velocidad vertical (régimen de ascenso, m/s): cada despegue+aterrizaje
+    # agrega tiempo de subida y bajada a la altitud de crucero. 0 = ignorar.
+    vertical_speed_ms: float = 0.0
 
     @property
     def has_takeoff_limit(self) -> bool:
         """¿Hay datos para aplicar el límite de peso de despegue?"""
         return self.empty_weight_kg > 0 and self.mtow_kg > 0
+
+    def vertical_time_h(self, altitude_m: float) -> float:
+        """Horas de ascenso + descenso a la altitud de crucero por cada tramo."""
+        if self.vertical_speed_ms <= 0 or altitude_m <= 0:
+            return 0.0
+        return (2 * altitude_m / self.vertical_speed_ms) / 3600.0
 
     @property
     def endurance_h(self) -> float:
@@ -181,6 +190,7 @@ class Scenario:
     pax_weight_kg: float = 90.0  # peso estándar por pasajero (cuenta como payload)
     fuel_price_per_l: float = 0.0  # 0 si la tarifa horaria ya incluye combustible
     fuel_density_kg_per_l: float = 0.8  # Jet A-1 ≈ 0.8 kg/L (peso del combustible)
+    cruise_altitude_m: float = 300.0  # altitud de crucero sobre el terreno (AGL)
     return_to_base: bool = False  # ¿el helicóptero debe volver a su base al final?
 
     def distance_km(self, a: str, b: str) -> float:
@@ -299,6 +309,7 @@ class Scenario:
                     can_combine_pax_cargo=get("can_combine_pax_cargo", True),
                     mtow_kg=get("mtow_kg", 0.0),
                     size_class=get("size_class", 2),
+                    vertical_speed_ms=get("vertical_speed_ms", 0.0),
                 )
             )
 
@@ -347,6 +358,7 @@ class Scenario:
             pax_weight_kg=data.get("pax_weight_kg", 90.0),
             fuel_price_per_l=data.get("fuel_price_per_l", 0.0),
             fuel_density_kg_per_l=data.get("fuel_density_kg_per_l", 0.8),
+            cruise_altitude_m=data.get("cruise_altitude_m", 300.0),
             return_to_base=data.get("return_to_base", False),
         )
         scenario.validate()

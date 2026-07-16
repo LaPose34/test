@@ -161,7 +161,10 @@ def _fly(
         al punto de recarga más cercano (mínimo peso, máxima carga útil).
     """
     km = scn.distance_km(state.pad, to_pad)
-    hours = km / heli.cruise_speed_kmh if km > 0 else 0.0
+    hours = 0.0
+    if km > 0:
+        # Tiempo de crucero + ascenso y descenso según la velocidad vertical
+        hours = km / heli.cruise_speed_kmh + heli.vertical_time_h(scn.cruise_altitude_m)
     fuel_h = state.fuel_h
     refueled = False
     fuel_l_takeoff = fuel_h * heli.fuel_consumption_lph if heli.fuel_consumption_lph > 0 else 0.0
@@ -403,11 +406,15 @@ def optimize_route(scn: Scenario, heli: Helicopter) -> RoutePlan:
         if pad.has_fuel:
             fuel_hop[pid] = 0.0
             continue
+        vert_h = heli.vertical_time_h(scn.cruise_altitude_m)
         best_h = math.inf
         for fid, fpad in scn.helipads.items():
             if fpad.has_fuel:
                 try:
-                    best_h = min(best_h, scn.distance_km(pid, fid) / heli.cruise_speed_kmh)
+                    best_h = min(
+                        best_h,
+                        scn.distance_km(pid, fid) / heli.cruise_speed_kmh + vert_h,
+                    )
                 except ValueError:
                     continue
         fuel_hop[pid] = best_h

@@ -555,6 +555,39 @@ def test_combustible_minimo_para_levantar_mas_carga():
             assert leg.takeoff_kg <= heli.mtow_kg + 1e-6
 
 
+def test_tiempo_vertical_en_tramos():
+    # Ascenso+descenso a 300 m con 6 m/s = 600/6 s = 100 s ≈ 0.02778 h por tramo
+    heli = _heli("H1", vertical_speed_ms=6.0)
+    scn = _scn(
+        helicopters=[heli],
+        requests=[TransportRequest("R1", "A", "B", pax=1)],
+    )
+    plan = optimize_route(scn, heli)
+    assert plan.feasible
+    esperado = 100.0 / 200.0 + (2 * 300.0 / 6.0) / 3600.0
+    assert abs(plan.total_hours - esperado) < 1e-9
+    assert abs(plan.total_cost - esperado * 2000.0) < 1e-6
+
+
+def test_velocidad_vertical_decide_modelo():
+    # Muchas paradas cortas: gana el helicóptero de ascenso rápido aunque su
+    # hora sea más cara, porque acumula mucho menos tiempo de maniobra.
+    lento = _heli("LENTO", pax_capacity=1, price_per_hour=2000, vertical_speed_ms=2.0)
+    rapido = _heli("RAPIDO", pax_capacity=1, price_per_hour=2400, vertical_speed_ms=10.0)
+    scn = _scn(
+        helicopters=[lento, rapido],
+        distances={("A", "B"): 10.0, ("B", "C"): 10.0, ("A", "C"): 15.0},
+        requests=[
+            TransportRequest("R1", "A", "B", pax=1),
+            TransportRequest("R2", "A", "B", pax=1),
+            TransportRequest("R3", "A", "B", pax=1),
+        ],
+    )
+    plans = optimize_fleet(scn)
+    assert plans[0].helicopter_id == "RAPIDO"
+    assert plans[0].total_cost < plans[1].total_cost
+
+
 def test_escenario_ejemplo_json():
     path = os.path.join(os.path.dirname(__file__), "..", "examples", "escenario_ejemplo.json")
     scn = Scenario.from_json_file(path)
